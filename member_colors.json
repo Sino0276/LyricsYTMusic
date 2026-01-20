@@ -1,0 +1,133 @@
+{
+  "BTS": {
+    "RM": "#6A0DAD",
+    "Jin": "#EC6BAE",
+    "SUGA": "#A3D3E8",
+    "j-hope": "#41A85F",
+    "Jimin": "#FFD700",
+    "V": "#355E3B",
+    "Jung Kook": "#9B111E",
+    "JK": "#9B111E",
+    "Jungkook": "#9B111E"
+  },
+  "BLACKPINK": {
+    "Jisoo": "#F2F2F2",
+    "Jennie": "#000000",
+    "Rosé": "#3366CC",
+    "Lisa": "#FFB347"
+  },
+  "NewJeans": {
+    "Minji": "#0066CC",
+    "Hanni": "#FF6699",
+    "Danielle": "#FFEB3B",
+    "Haerin": "#8BC34A",
+    "Hyein": "#FF5722"
+  },
+  "aespa": {
+    "Karina": "#9966CC",
+    "Giselle": "#FF4444",
+    "Winter": "#00BFFF",
+    "Ningning": "#FF69B4"
+  },
+  "TWICE": {
+    "Nayeon": "#87CEEB",
+    "Jeongyeon": "#90EE90",
+    "Momo": "#FFB6C1",
+    "Sana": "#9370DB",
+    "Jihyo": "#FFD700",
+    "Mina": "#ADD8E6",
+    "Dahyun": "#FFFFFF",
+    "Chaeyoung": "#FF6347",
+    "Tzuyu": "#4169E1"
+  },
+  "SEVENTEEN": {
+    "S.Coups": "#E4002B",
+    "Jeonghan": "#FFFFFF",
+    "Joshua": "#FFD700",
+    "Jun": "#9400D3",
+    "Hoshi": "#FF4500",
+    "Wonwoo": "#191970",
+    "Woozi": "#FFC0CB",
+    "DK": "#32CD32",
+    "Mingyu": "#1E90FF",
+    "The8": "#8B4513",
+    "Seungkwan": "#FF69B4",
+    "Vernon": "#808080",
+    "Dino": "#00CED1"
+  },
+  "Stray Kids": {
+    "Bang Chan": "#FF0000",
+    "Lee Know": "#FFA500",
+    "Changbin": "#000000",
+    "Hyunjin": "#FFFFFF",
+    "Han": "#0000FF",
+    "Felix": "#FFD700",
+    "Seungmin": "#008000",
+    "I.N": "#FF69B4"
+  },
+  "IVE": {
+    "Yujin": "#FF6B6B",
+    "Gaeul": "#4ECDC4",
+    "Rei": "#A8E6CF",
+    "Wonyoung": "#FFE66D",
+    "Liz": "#95E1D3",
+    "Leeseo": "#DDA0DD"
+  },
+  "(G)I-DLE": {
+    "Miyeon": "#FFFFFF",
+    "Minnie": "#FFD700",
+    "Soyeon": "#FF0000",
+    "Yuqi": "#90EE90",
+    "Shuhua": "#87CEEB"
+  },
+  "LE SSERAFIM": {
+    "Sakura": "#FFB7C5",
+    "Kim Chaewon": "#7FFFD4",
+    "Huh Yunjin": "#FF6347",
+    "Kazuha": "#E6E6FA",
+    "Hong Eunchae": "#98FB98"
+  },
+  "Red Velvet": {
+    "Irene": "#FFFFFF",
+    "Seulgi": "#FFD700",
+    "Wendy": "#1E90FF",
+    "Joy": "#32CD32",
+    "Yeri": "#9370DB"
+  },
+  "EXO": {
+    "Xiumin": "#87CEEB",
+    "Suho": "#4169E1",
+    "Lay": "#9966CC",
+    "Baekhyun": "#FFD700",
+    "Chen": "#90EE90",
+    "Chanyeol": "#FF4500",
+    "D.O.": "#696969",
+    "Kai": "#8B4513",
+    "Sehun": "#FFFFFF"
+  },
+  "NCT": {
+    "Taeil": "#FF6347",
+    "Johnny": "#228B22",
+    "Taeyong": "#C0C0C0",
+    "Yuta": "#FF0000",
+    "Kun": "#FFD700",
+    "Doyoung": "#4169E1",
+    "Ten": "#9400D3",
+    "Jaehyun": "#FFC0CB",
+    "WinWin": "#00CED1",
+    "Jungwoo": "#FFFF00",
+    "Lucas": "#FF4500",
+    "Mark": "#32CD32",
+    "Xiaojun": "#FF69B4",
+    "Hendery": "#DDA0DD",
+    "Renjun": "#ADD8E6",
+    "Jeno": "#1E90FF",
+    "Haechan": "#FFD700",
+    "Jaemin": "#FFB6C1",
+    "Yangyang": "#90EE90",
+    "Shotaro": "#FF6347",
+    "Sungchan": "#4B0082",
+    "Chenle": "#FFFF00",
+    "Jisung": "#87CEEB"
+  }
+}
