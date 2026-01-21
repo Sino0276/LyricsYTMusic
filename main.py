@@ -35,6 +35,8 @@ class LyricsApp:
     
     POLL_INTERVAL_MS = 1000  # 곡 변경 감지 간격 (1초)
     SYNC_INTERVAL_MS = 500   # 가사 동기화 간격 (0.5초)
+    POLL_INTERVAL_SLOW_MS = 5000  # 최소화 시 감지 간격 (5초)
+    SYNC_INTERVAL_SLOW_MS = 2000  # 최소화 시 동기화 간격 (2초)
     DEFAULT_COLOR = "#e0e0e0"  # 기본 가사 색상 (밝은 회색)
     HIGHLIGHT_COLOR = "#ff6b6b"  # 현재 가사 색상 (빨간색 계열)
     
@@ -186,13 +188,19 @@ class LyricsApp:
         """곡 감지 스케줄"""
         if self._running and self.overlay.is_alive():
             self._check_track()
-            self.overlay.schedule(self.POLL_INTERVAL_MS, self._schedule_track_check)
+            # 최소화 시 폴링 간격 증가
+            interval = self.POLL_INTERVAL_SLOW_MS if self.overlay.is_minimized() else self.POLL_INTERVAL_MS
+            self.overlay.schedule(interval, self._schedule_track_check)
     
     def _schedule_lyrics_sync(self):
         """가사 동기화 스케줄"""
         if self._running and self.overlay.is_alive():
-            self._sync_lyrics()
-            self.overlay.schedule(self.SYNC_INTERVAL_MS, self._schedule_lyrics_sync)
+            # 최소화 시 동기화 안 함 (어차피 댄 안 보이니까)
+            if not self.overlay.is_minimized():
+                self._sync_lyrics()
+            # 최소화 시 폴링 간격 증가
+            interval = self.SYNC_INTERVAL_SLOW_MS if self.overlay.is_minimized() else self.SYNC_INTERVAL_MS
+            self.overlay.schedule(interval, self._schedule_lyrics_sync)
     
     def _check_track(self):
         """현재 곡 확인 및 업데이트"""

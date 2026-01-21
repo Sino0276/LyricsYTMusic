@@ -142,6 +142,10 @@ class LyricsOverlay:
         # 현재 표시 중인 곡 정보
         self._current_title = ""
         self._current_artist = ""
+        
+        # 최소화 상태
+        self._is_minimized = False
+        self._pre_minimize_geometry = None
 
     
     def _setup_window(self):
@@ -459,13 +463,25 @@ class LyricsOverlay:
         """최소화 토글"""
         # 가사 영역만 숨기기/보이기
         if self.lyrics_container.winfo_viewable():
+            self._pre_minimize_geometry = self.root.geometry()
             self.lyrics_container.pack_forget()
             self.artist_label.pack_forget()
             self.root.geometry(f"{self.root.winfo_width()}x45")
+            self._is_minimized = True
+            print("[UI] 창 최소화 (리소스 절약 모드)")
         else:
             self.artist_label.pack(fill=tk.X, padx=15, pady=(5, 0))
             self.lyrics_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-            self.root.geometry(f"{self.root.winfo_width()}x500")
+            if self._pre_minimize_geometry:
+                self.root.geometry(self._pre_minimize_geometry)
+            else:
+                self.root.geometry(f"{self.root.winfo_width()}x500")
+            self._is_minimized = False
+            print("[UI] 창 복원 (정상 모드)")
+    
+    def is_minimized(self) -> bool:
+        """최소화 상태 확인"""
+        return self._is_minimized
     
     def _on_lyrics_frame_configure(self, event):
         """가사 프레임 크기 변경 시"""
