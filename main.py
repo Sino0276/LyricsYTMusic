@@ -5,6 +5,7 @@ YouTube Music 가사 오버레이 애플리케이션
 
 import threading
 import time
+import os
 from typing import Optional
 
 from track_detector import TrackDetector, TrackInfo
@@ -62,6 +63,37 @@ class LyricsApp:
         
         # 싱크 조절
         self._sync_offset = 0
+        
+        # 설정 로드
+        self._settings = self._load_settings()
+    
+    def _load_settings(self) -> dict:
+        """설정 파일 로드"""
+        import json
+        settings_file = "settings.json"
+        default_settings = {"multi_source_search": False}
+        
+        try:
+            if os.path.exists(settings_file):
+                with open(settings_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f"[설정] 로드 실패: {e}")
+        
+        return default_settings
+    
+    def _save_settings(self, settings: dict):
+        """설정 파일 저장"""
+        import json
+        settings_file = "settings.json"
+        
+        try:
+            with open(settings_file, 'w', encoding='utf-8') as f:
+                json.dump(settings, f, ensure_ascii=False, indent=2)
+            self._settings = settings
+            print(f"[설정] 저장 완료: {settings}")
+        except Exception as e:
+            print(f"[설정] 저장 실패: {e}")
 
     def run(self):
         """애플리케이션 실행"""
@@ -74,51 +106,76 @@ class LyricsApp:
         # 검색 요청 콜백 연결
         self.overlay.set_on_search_request(self._on_search_request)
         
+        # 설정 저장 콜백 연결 (패널 방식)
+        self.overlay.set_on_settings_save(self._save_settings)
+        self.overlay.update_settings_ui(self._settings)
+        
+        # 검색 실행 콜백 연결
+        self.overlay.set_on_do_search(self._do_search_action)
+        self.overlay.set_on_apply_lyrics(self._apply_lyrics_action)
+        
         if TIMELINE_AVAILABLE:
             self._schedule_lyrics_sync()
             
         self.overlay.run()
     
     def _on_search_request(self):
-        """검색 팝업 요청 처리"""
+        """검색 패널 열릴 때 호출 - 검색 필드 업데이트"""
         if not self._current_track:
             return
             
         current_title = self._current_track.title
         current_artist = self._current_track.artist
         
-        # 검색 동작
-        def search_action(title, artist):
-            query = f"{artist} - {title}"
-            return self.lyrics_fetcher.search_candidates(query)
-            
-        # 적용 동작
-        def apply_action(lrc_content, source_name):
-            print(f"[수동적용] 선택된 가사 적용 (출처: {source_name})")
-            
-            # 파싱
-            self._current_lyrics = self.lyrics_parser.parse(lrc_content)
-            self._current_line_index = -1
-            self._sync_offset = 0
-            self.overlay.reset_sync_control()
-            
-            # 즉시 표시
-            if self.overlay.is_alive():
-                self.overlay.schedule(0, self._display_lyrics)
-                
-            # 캐시 저장 (나중을 위해)
-            # lyrics_fetcher에 메서드가 없으므로 직접 접근하거나 internal 사용
-            if self._current_track:
-                cache_key = self.lyrics_fetcher._get_cache_key(self._current_track.title, self._current_track.artist)
-                self.lyrics_fetcher._save_to_cache(cache_key, lrc_content)
-            
-            # 번역 재시작
-            if self.translator and self._current_track:
-                # 라인이 비워져 있을 수 있으므로 약간의 딜레이 후 실행하거나 상태 리셋
-                self._stop_translation = True
-                threading.Thread(target=lambda: self._start_translation_delayed(self._current_track), daemon=True).start()
+        # 제목에서 원곡 아티스트 추출 시도 (괄호 내용)
+        import re
+        extracted_artists = re.findall(r'[\[\(\{]([^\]\)\}]+)[\]\)\}]', current_title)
         
-        self.overlay.show_search_popup(current_title, current_artist, search_action, apply_action)
+        # 추출된 아티스트 중 원곡 정보일 가능성이 높은 것 선택
+        suggested_artist = current_artist  # 기본값은 업로더
+        for feat in extracted_artists:
+            if ' - ' in feat:
+                parts = feat.split(' - ')
+                suggested_artist = parts[1].strip() if len(parts) > 1 else parts[0].strip()
+                break
+            elif not re.search(r'(?i)(cover|커버)', feat) and len(feat) > 2:
+                suggested_artist = feat.strip()
+                break
+        
+        # 정제된 제목 (괄호 제거)
+        clean_title = re.sub(r'[\[\(\{].*?[\]\)\}]', '', current_title)
+        clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+        if ' / ' in clean_title:
+            clean_title = clean_title.split(' / ')[0].strip()
+        
+        # 검색 필드 업데이트
+        self.overlay.update_search_fields(clean_title, suggested_artist)
+    
+    def _do_search_action(self, title: str, artist: str):
+        """검색 버튼 클릭 시 실행"""
+        query = f"{artist} {title}"
+        results = self.lyrics_fetcher.search_candidates(query)
+        self.overlay.update_search_results(results)
+    
+    def _apply_lyrics_action(self, lrc_content: str, source_name: str):
+        """가사 적용"""
+        print(f"[수동적용] 선택된 가사 적용 (출처: {source_name})")
+        
+        self._current_lyrics = self.lyrics_parser.parse(lrc_content)
+        self._current_line_index = -1
+        self._sync_offset = 0
+        self.overlay.reset_sync_control()
+        
+        if self.overlay.is_alive():
+            self.overlay.schedule(0, self._display_lyrics)
+            
+        if self._current_track:
+            cache_key = self.lyrics_fetcher._get_cache_key(self._current_track.title, self._current_track.artist)
+            self.lyrics_fetcher._save_to_cache(cache_key, lrc_content)
+        
+        if self.translator and self._current_track:
+            self._stop_translation = True
+            threading.Thread(target=lambda: self._start_translation_delayed(self._current_track), daemon=True).start()
 
     def _start_translation_delayed(self, track):
         """번역 재시작 (딜레이)"""
@@ -145,6 +202,10 @@ class LyricsApp:
             self._current_track = track
             self._current_line_index = -1
             self._sync_offset = 0  # 싱크 오프셋 초기화
+            
+            # 이전 가사 즉시 초기화 (이전 곡 가사가 남아있지 않도록)
+            self._current_lyrics = []
+            
             if self.overlay.is_alive():
                 self.overlay.reset_sync_control() # UI 슬라이더 초기화
             
@@ -165,7 +226,11 @@ class LyricsApp:
         
         # 가사 검색 (백그라운드)
         def fetch_lyrics():
-            lyrics_text = self.lyrics_fetcher.get_lyrics(track.title, track.artist, track.duration_ms)
+            # 설정에 따라 검색 방식 선택
+            if self._settings.get("multi_source_search", False):
+                lyrics_text = self.lyrics_fetcher.get_lyrics_multi_source(track.title, track.artist, track.duration_ms)
+            else:
+                lyrics_text = self.lyrics_fetcher.get_lyrics(track.title, track.artist, track.duration_ms)
             
             if not self._running or self._current_track != track:
                 return
@@ -183,8 +248,10 @@ class LyricsApp:
                 if self.translator:
                     self._start_translation(track)
             else:
+                # 자동검색 실패 시 수동검색 팝업 자동 표시
                 if self.overlay.is_alive():
-                    self.overlay.schedule(0, self.overlay.show_not_found)
+                    print("[가사] 자동검색 실패, 수동검색 팝업 표시")
+                    self.overlay.schedule(0, self._on_search_request)
         
         thread = threading.Thread(target=fetch_lyrics, daemon=True)
         thread.start()
@@ -215,7 +282,6 @@ class LyricsApp:
                     continue
                     
                 try:
-                    import time
                     # API 속도 제한 고려하여 약간의 지연
                     # time.sleep(0.05) 
                     

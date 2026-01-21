@@ -7,6 +7,7 @@ syncedlyrics 라이브러리를 사용하여 시간 동기화된 LRC 가사를 �
 import re
 import json
 import os
+import time
 from typing import Optional
 import syncedlyrics
 
@@ -15,8 +16,8 @@ class LyricsFetcher:
     
     CACHE_FILE = "lyrics_cache.json"
     
-    # 검색 시도 횟수 제한 (속도 개선을 위해 축소)
-    MAX_SEARCH_ATTEMPTS = 2
+    # 검색 시도 횟수 제한 (신뢰성을 위해 적절히 증가)
+    MAX_SEARCH_ATTEMPTS = 4
     
     def __init__(self):
         self._cache = {}
@@ -56,6 +57,49 @@ class LyricsFetcher:
                 print(f"[수동검색] 오류 ({prov}): {e}")
                 
         return results
+
+    def get_lyrics_multi_source(self, title: str, artist: str, duration_ms: Optional[int] = None) -> Optional[str]:
+        """
+        여러 소스에서 병렬로 가사 검색 (더 정확하지만 느림)
+        모든 소스를 검색하고 가장 먼저 유효한 결과 반환
+        """
+        # 캐시 확인
+        cache_key = self._get_cache_key(title, artist)
+        cached_lyrics = self._load_from_cache(cache_key)
+        
+        if cached_lyrics:
+            if self._validate_lyrics(cached_lyrics, duration_ms):
+                print(f"[가사] 캐시 적중: {title} - {artist}")
+                return cached_lyrics
+        
+        print(f"[가사] 다중 소스 검색 시작: {title} - {artist}")
+        
+        # 검색 쿼리 생성
+        queries = self._generate_search_queries(title, artist)
+        if not queries:
+            queries = [f"{artist} {title}"]
+        
+        query = queries[0]  # 첫 번째 쿼리 사용
+        
+        # 여러 소스에서 검색
+        candidates = self.search_candidates(query)
+        
+        # 유효한 가사 찾기
+        for prov, lrc in candidates:
+            if self._validate_lyrics(lrc, duration_ms):
+                print(f"[가사] 다중 소스에서 찾음 ({prov})")
+                self._save_to_cache(cache_key, lrc)
+                return lrc
+        
+        # 유효성 검증 실패해도 결과가 있으면 첫 번째 반환 (완화)
+        if candidates:
+            prov, lrc = candidates[0]
+            print(f"[가사] 유효성 검증 통과 안 됐지만 첫 번째 결과 사용 ({prov})")
+            self._save_to_cache(cache_key, lrc)
+            return lrc
+        
+        print("[가사] 다중 소스 검색 실패")
+        return None
 
     def _load_cache(self):
         """캐시 파일 로드"""
@@ -123,23 +167,24 @@ class LyricsFetcher:
                 break
                 
             try:
-                print(f"[가사] 검색 시도 ({i+1}/{len(queries)}): {query}")
+                print(f"[가사] 검색 시도 ({i+1}/{min(len(queries), self.MAX_SEARCH_ATTEMPTS)}): {query}")
                 
                 # syncedlyrics 검색
-                # enhanced=True는 더 많은 provider를 사용하지만 느릴 수 있음
-                lrc_content = syncedlyrics.search(query)
+                # 처음 2회는 기본 검색, 이후는 enhanced 모드로 더 많은 소스 검색
+                use_enhanced = (i >= 2)
+                lrc_content = syncedlyrics.search(query, enhanced=use_enhanced)
                 
                 if lrc_content:
                     # 유효성 검증
                     if self._validate_lyrics(lrc_content, duration_ms):
-                        print(f"[가사] 가사 찾음 (쿼리: {query})")
+                        print(f"[가사] 가사 찾음 (enhanced={use_enhanced}, 쿼리: {query})")
                         self._save_to_cache(cache_key, lrc_content)
                         return lrc_content
                     else:
                          print(f"[가사] 가사 길이 불일치, 무시함 (쿼리: {query})")
                 
                 # 너무 빠른 요청 방지
-                time.sleep(0.5)
+                time.sleep(0.3)
                 
             except Exception as e:
                 print(f"[가사] 검색 오류 (쿼리: {query}): {e}")
@@ -165,10 +210,10 @@ class LyricsFetcher:
             
             lrc_duration_ms = int((minutes * 60 + seconds) * 1000)
             
-            # 오차 범위: 20초 (인트로/아웃트로 차이 고려)
+            # 오차 범위: 30초 (라이브 버전, 인트로/아웃트로 차이 고려)
             diff = abs(lrc_duration_ms - target_duration_ms)
             
-            if diff > 20000: # 20초 이상 차이나면 다른 곡일 확률 높음
+            if diff > 30000: # 30초 이상 차이나면 다른 곡일 확률 높음
                 print(f"[검증] 길이 차이 과다: LRC={lrc_duration_ms}ms, Track={target_duration_ms}ms (Diff: {diff}ms)")
                 return False
             
@@ -237,28 +282,31 @@ class LyricsFetcher:
         
         # 쿼리 생성 전략
         
-        # 전략 A: [추출된 아티스트] + [정제된 제목] (가장 정확할 수 있음)
+        # 전략 A: [추출된 아티스트] + [정제된 제목] (원곡 아티스트 최우선)
+        # 제목 괄호 안에서 원곡 아티스트를 추출하여 먼저 시도
         for feat in featured_artists:
             # feat 안에 'x', ',' 등으로 여러 아티스트가 있을 수 있음 -> 일단 통째로 사용
             # 구분자 '-', ':' 가 포함되어 있다면 원곡 정보일 확률 높음
             if ' - ' in feat:
                 # [제목 - 아티스트] 또는 [아티스트 - 제목]
                 sub_parts = feat.split(' - ')
-                queries.append(f"{sub_parts[1]} {sub_parts[0]}")
-                queries.append(f"{sub_parts[0]} {sub_parts[1]}")
+                queries.append(f"{sub_parts[0]} {clean_title}")  # 첫 번째 파트 + 제목
+                queries.append(f"{sub_parts[1]} {clean_title}")  # 두 번째 파트 + 제목
             else:
                 queries.append(f"{feat} {clean_title}")
-                queries.append(f"{clean_title} {feat}")
-
-        # 전략 B: [기존 아티스트] + [정제된 제목]
+        
+        # 전략 B: [업로더/채널] + [원본 제목] (커버가 아닌 경우에 유효)
+        if artist and artist.lower() != 'unknown artist':
+            # 커버 관련 키워드가 제목에 없을 때만 높은 우선순위
+            if not re.search(r'(?i)(cover|커버|歌ってみた|カバー)', title):
+                queries.append(f"{artist} {title}")
+        
+        # 전략 C: [업로더] + [정제된 제목]
         clean_artist = remove_noise(artist)
         if clean_artist and clean_artist.lower() != 'unknown artist':
             queries.append(f"{clean_artist} {clean_title}")
-            queries.append(f"{clean_title} {clean_artist}")
 
-        # 전략 C: [정제된 제목] 만
-        # 정확도를 위해 단독 제목 검색은 제거하거나 조건을 강화합니다.
-        # 제목이 3단어 이상이거나 길이가 15자 이상일 때만 허용
+        # 전략 D: [정제된 제목] 만 (제목이 충분히 고유한 경우)
         if len(clean_title.split()) >= 3 or len(clean_title) >= 15:
             queries.append(clean_title)
 

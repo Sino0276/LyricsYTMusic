@@ -19,6 +19,101 @@ class LyricDisplayLine:
     romanization: str = ""     # 발음 (로마자 표기)
 
 
+
+class RoundedSlider(tk.Canvas):
+    """둥근 디자인의 커스텀 슬라이더"""
+    
+    def __init__(self, master, width=300, height=30, min_val=-3000, max_val=3000, command=None, bg="#202035"):
+        super().__init__(master, width=width, height=height, bg=bg, highlightthickness=0)
+        self.min_val = min_val
+        self.max_val = max_val
+        self.cur_val = 0
+        self.command = command
+        
+        self.w = width
+        self.h = height
+        self.pad = 10  # 좌우 여백
+        self.bar_h = 6 # 바 두께
+        
+        # 이벤트 바인딩
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<B1-Motion>", self._on_drag)
+        self.bind("<Configure>", self._on_resize)
+        
+        self._draw()
+
+    def _on_resize(self, event):
+        self.w = event.width
+        self.h = event.height
+        self._draw()
+
+    def _val_to_x(self, val):
+        usable_w = self.w - 2 * self.pad
+        percent = (val - self.min_val) / (self.max_val - self.min_val)
+        return self.pad + percent * usable_w
+
+    def _x_to_val(self, x):
+        usable_w = self.w - 2 * self.pad
+        if usable_w <= 0: return self.min_val
+        
+        rel_x = x - self.pad
+        percent = max(0, min(1, rel_x / usable_w))
+        return int(self.min_val + percent * (self.max_val - self.min_val))
+
+    def _draw(self):
+        self.delete("all")
+        
+        # 중앙선 (배경)
+        cy = self.h / 2
+        
+        # 바 배경 (둥근 캡)
+        self.create_line(
+            self.pad, cy, self.w - self.pad, cy,
+            width=self.bar_h, fill="#16213e", capstyle=tk.ROUND
+        )
+        
+        # 활성 바 (중앙 0 기준)
+        center_x = self._val_to_x(0)
+        curr_x = self._val_to_x(self.cur_val)
+        
+        if self.cur_val != 0:
+            self.create_line(
+                center_x, cy, curr_x, cy,
+                width=self.bar_h, fill="#e94560", capstyle=tk.ROUND
+            )
+        
+        # 핸들 (Thumb)
+        r = 8
+        self.create_oval(
+            curr_x - r, cy - r, curr_x + r, cy + r,
+            fill="#ffffff", outline="#e94560", width=2
+        )
+
+    def _update_val(self, x):
+        new_val = self._x_to_val(x)
+        # 100ms 단위 스냅 (선택사항)
+        new_val = round(new_val / 100) * 100
+        
+        if self.cur_val != new_val:
+            self.cur_val = new_val
+            self._draw()
+            if self.command:
+                self.command(self.cur_val)
+
+    def set(self, val):
+        self.cur_val = max(self.min_val, min(self.max_val, val))
+        self._draw()
+
+    def get(self):
+        return self.cur_val
+    
+    def _on_click(self, event):
+        self._update_val(event.x)
+        
+    def _on_drag(self, event):
+        self._update_val(event.x)
+
+
 class LyricsOverlay:
     """가사 오버레이 창"""
     
@@ -37,10 +132,17 @@ class LyricsOverlay:
         
         # 콜백
         self._on_close: Optional[Callable] = None
+        self._on_sync_adjust_callback: Optional[Callable] = None
+        self._on_search_callback: Optional[Callable] = None
+        self._on_settings_callback: Optional[Callable] = None
+        self._on_save_settings_callback: Optional[Callable] = None
+        self._on_do_search_callback: Optional[Callable] = None
+        self._on_apply_lyrics_callback: Optional[Callable] = None
         
         # 현재 표시 중인 곡 정보
         self._current_title = ""
         self._current_artist = ""
+
     
     def _setup_window(self):
         """창 기본 설정"""
@@ -71,7 +173,7 @@ class LyricsOverlay:
         
         # 창 닫기 이벤트
         self.root.protocol("WM_DELETE_WINDOW", self._handle_close)
-    
+
     def _create_widgets(self):
         """UI 위젯 생성"""
         # 메인 프레임
@@ -88,16 +190,6 @@ class LyricsOverlay:
         self.title_bar.pack(fill=tk.X)
         self.title_bar.pack_propagate(False)
         
-        # 곡 정보 레이블
-        self.title_label = tk.Label(
-            self.title_bar,
-            text="YouTube Music Lyrics",
-            bg="#16213e",
-            fg="#e94560",
-            font=("Segoe UI", 11, "bold"),
-            anchor="w"
-        )
-        self.title_label.pack(side=tk.LEFT, padx=10, pady=8)
         
         # 닫기 버튼
         self.close_btn = tk.Label(
@@ -157,6 +249,17 @@ class LyricsOverlay:
         self.search_btn.bind("<Enter>", lambda e: self.search_btn.configure(fg="#e94560"))
         self.search_btn.bind("<Leave>", lambda e: self.search_btn.configure(fg="#888888"))
         
+        # 곡 정보 레이블 (버튼 배치 후 남은 공간의 왼쪽부터 차지)
+        self.title_label = tk.Label(
+            self.title_bar,
+            text="YouTube Music Lyrics",
+            bg="#16213e",
+            fg="#e94560",
+            font=("Segoe UI", 11, "bold"),
+            anchor="w"
+        )
+        self.title_label.pack(side=tk.LEFT, padx=10, pady=8, fill=tk.X, expand=True)
+        
         # 드래그 바인딩
         self.title_bar.bind("<Button-1>", self._start_drag)
         self.title_bar.bind("<B1-Motion>", self._on_drag)
@@ -173,24 +276,20 @@ class LyricsOverlay:
             anchor="w"
         )
         self.artist_label.pack(fill=tk.X, padx=15, pady=(5, 0))
-        
+
         # 싱크 조절 패널 (기본 숨김)
         self.sync_frame = tk.Frame(self.main_frame, bg="#202035", height=0)
         # pack은 _toggle_sync_panel에서 처리
         
-        self.sync_slider = tk.Scale(
+        # 커스텀 슬라이더로 교체
+        self.sync_slider = RoundedSlider(
             self.sync_frame,
-            from_=-3000,
-            to=3000,
-            orient=tk.HORIZONTAL,
+            min_val=-5000,
+            max_val=5000,
             bg="#202035",
-            fg="#e94560",
-            troughcolor="#16213e",
-            highlightthickness=0,
-            showvalue=0, # 값은 별도 라벨로 표시
             command=self._on_slider_move
         )
-        self.sync_slider.pack(fill=tk.X, padx=20, pady=(5, 0))
+        self.sync_slider.pack(fill=tk.X, padx=20, pady=(10, 5))
         
         self.sync_label = tk.Label(
             self.sync_frame,
@@ -199,9 +298,63 @@ class LyricsOverlay:
             fg="#cccccc",
             font=("Segoe UI", 9)
         )
-        self.sync_label.pack(pady=(0, 5))
+        self.sync_label.pack(pady=(0, 10))
+        
+        # 설정 패널 (기본 숨김)
+        self.settings_frame = tk.Frame(self.main_frame, bg="#202035")
+        # pack은 _toggle_settings_panel에서 처리
+        
+        # 다중 소스 검색 체크박스
+        self._multi_source_var = tk.BooleanVar(value=False)
+        self.multi_source_check = tk.Checkbutton(
+            self.settings_frame,
+            text="다중 소스 검색 (더 정확, 더 느림)",
+            variable=self._multi_source_var,
+            bg="#202035",
+            fg="#cccccc",
+            selectcolor="#16213e",
+            activebackground="#202035",
+            activeforeground="#e94560",
+            font=("Segoe UI", 9),
+            command=self._on_settings_changed
+        )
+        self.multi_source_check.pack(anchor="w", padx=20, pady=10)
+        
+        # 검색 패널 (기본 숨김)
+        self.search_frame = tk.Frame(self.main_frame, bg="#202035")
+        # pack은 _toggle_search_panel에서 처리
+        
+        # 검색 입력 필드들
+        search_input_frame = tk.Frame(self.search_frame, bg="#202035")
+        search_input_frame.pack(fill=tk.X, padx=15, pady=10)
+        
+        tk.Label(search_input_frame, text="아티스트", bg="#202035", fg="#888888", font=("Segoe UI", 8)).pack(anchor="w")
+        self.search_artist_entry = tk.Entry(search_input_frame, bg="#16213e", fg="white", insertbackground="white", relief=tk.FLAT, font=("Segoe UI", 9))
+        self.search_artist_entry.pack(fill=tk.X, pady=(0, 5))
+        
+        tk.Label(search_input_frame, text="제목", bg="#202035", fg="#888888", font=("Segoe UI", 8)).pack(anchor="w")
+        self.search_title_entry = tk.Entry(search_input_frame, bg="#16213e", fg="white", insertbackground="white", relief=tk.FLAT, font=("Segoe UI", 9))
+        self.search_title_entry.pack(fill=tk.X)
+        
+        # 검색 버튼과 상태
+        search_btn_frame = tk.Frame(self.search_frame, bg="#202035")
+        search_btn_frame.pack(fill=tk.X, padx=15, pady=(5, 0))
+        
+        self.do_search_btn = tk.Button(search_btn_frame, text="검색", bg="#e94560", fg="white", relief=tk.FLAT, font=("Segoe UI", 9), command=self._do_search)
+        self.do_search_btn.pack(side=tk.LEFT, padx=(0, 10))
+        
+        self.search_status_label = tk.Label(search_btn_frame, text="", bg="#202035", fg="#888888", font=("Segoe UI", 8))
+        self.search_status_label.pack(side=tk.LEFT)
+        
+        # 검색 결과 리스트
+        self.search_listbox = tk.Listbox(self.search_frame, bg="#16213e", fg="white", selectbackground="#e94560", relief=tk.FLAT, height=4, font=("Segoe UI", 8))
+        self.search_listbox.pack(fill=tk.X, padx=15, pady=5)
+        
+        # 적용 버튼
+        self.apply_search_btn = tk.Button(self.search_frame, text="선택한 가사 적용", bg="#202035", fg="white", relief=tk.FLAT, font=("Segoe UI", 9), command=self._apply_selected_lyrics)
+        self.apply_search_btn.pack(fill=tk.X, padx=15, pady=(0, 10))
 
-        # 가사 컨테이너 (스크롤 가능)
+        # 가사 컨테이너
         self.lyrics_container = tk.Canvas(
             self.main_frame,
             bg="#1a1a2e",
@@ -236,6 +389,20 @@ class LyricsOverlay:
         self.resize_handle.place(relx=1.0, rely=1.0, anchor="se")
         self.resize_handle.bind("<Button-1>", self._start_resize)
         self.resize_handle.bind("<B1-Motion>", self._on_resize)
+        
+        # 설정 버튼 (우측 하단, 리사이즈 핸들 옆)
+        self.settings_btn = tk.Label(
+            self.main_frame,
+            text="⚙",
+            bg="#1a1a2e",
+            fg="#4a4a6a",
+            font=("Segoe UI", 10),
+            cursor="hand2"
+        )
+        self.settings_btn.place(relx=1.0, rely=1.0, anchor="se", x=-25)
+        self.settings_btn.bind("<Button-1>", lambda e: self._on_settings_click())
+        self.settings_btn.bind("<Enter>", lambda e: self.settings_btn.configure(fg="#e94560"))
+        self.settings_btn.bind("<Leave>", lambda e: self.settings_btn.configure(fg="#4a4a6a"))
         
         # 가사 라인 위젯들
         self._lyric_labels: list[tk.Label] = []
@@ -338,110 +505,119 @@ class LyricsOverlay:
         if self._on_sync_adjust_callback:
             self._on_sync_adjust_callback(offset)
             
-    def _on_slider_move(self, value):
-        """슬라이더 이동 시"""
-        offset = int(value)
-        sign = "+" if offset > 0 else ""
-        sec = offset / 1000.0
-        
-        self.sync_label.configure(text=f"싱크 조절: {sign}{sec}s")
-        
-        if self._on_sync_adjust_callback:
-            self._on_sync_adjust_callback(offset)
+
             
+
+    def _on_settings_click(self):
+        """설정 버튼 클릭 시 - 패널 토글"""
+        self._toggle_settings_panel()
+
+    def _toggle_settings_panel(self):
+        """설정 패널 토글"""
+        # 다른 패널 닫기
+        if self.search_frame.winfo_viewable():
+            self.search_frame.pack_forget()
+            self.search_btn.configure(fg="#888888")
+        
+        if self.settings_frame.winfo_viewable():
+            self.settings_frame.pack_forget()
+            self.settings_btn.configure(fg="#4a4a6a")
+        else:
+            self.settings_frame.pack(fill=tk.X, after=self.artist_label)
+            self.settings_btn.configure(fg="#e94560")
+
+    def _on_settings_changed(self):
+        """설정 변경 시 콜백 호출"""
+        if self._on_save_settings_callback:
+            new_settings = {"multi_source_search": self._multi_source_var.get()}
+            self._on_save_settings_callback(new_settings)
+    
+    def set_on_settings_save(self, callback: Callable[[dict], None]):
+        """설정 저장 콜백 설정"""
+        self._on_save_settings_callback = callback
+    
+    def update_settings_ui(self, settings: dict):
+        """설정 UI 업데이트"""
+        self._multi_source_var.set(settings.get("multi_source_search", False))
+
     def _on_search_click(self):
-        """검색 버튼 클릭 시"""
+        """검색 버튼 클릭 시 - 패널 토글"""
+        self._toggle_search_panel()
         if self._on_search_callback:
             self._on_search_callback()
 
-    def set_on_search_request(self, callback: Callable):
-        """검색 요청 콜백 설정"""
-        self._on_search_callback = callback
+    def _toggle_search_panel(self):
+        """검색 패널 토글"""
+        # 다른 패널 닫기
+        if self.settings_frame.winfo_viewable():
+            self.settings_frame.pack_forget()
+            self.settings_btn.configure(fg="#4a4a6a")
+        
+        if self.search_frame.winfo_viewable():
+            self.search_frame.pack_forget()
+            self.search_btn.configure(fg="#888888")
+        else:
+            self.search_frame.pack(fill=tk.X, after=self.artist_label)
+            self.search_btn.configure(fg="#e94560")
+    
+    def update_search_fields(self, title: str, artist: str):
+        """검색 필드 업데이트"""
+        self.search_artist_entry.delete(0, tk.END)
+        self.search_artist_entry.insert(0, artist)
+        self.search_title_entry.delete(0, tk.END)
+        self.search_title_entry.insert(0, title)
+        self.search_listbox.delete(0, tk.END)
+        self.search_status_label.configure(text="")
+    
+    def _do_search(self):
+        """검색 실행"""
+        if self._on_do_search_callback:
+            title = self.search_title_entry.get()
+            artist = self.search_artist_entry.get()
+            self.search_status_label.configure(text="검색 중...", fg="#ffff00")
+            self.root.update()
+            self._on_do_search_callback(title, artist)
+    
+    def set_on_do_search(self, callback: Callable[[str, str], None]):
+        """검색 실행 콜백 설정"""
+        self._on_do_search_callback = callback
+    
+    def update_search_results(self, results: list[tuple[str, str]]):
+        """검색 결과 업데이트"""
+        self._search_results = results
+        self.search_listbox.delete(0, tk.END)
+        
+        if not results:
+            self.search_status_label.configure(text="검색 결과 없음", fg="#ff6b6b")
+        else:
+            self.search_status_label.configure(text=f"{len(results)}개 결과", fg="#00ff00")
+            for prov, lrc in results:
+                preview = lrc.strip().split('\n')[0][:25]
+                self.search_listbox.insert(tk.END, f"[{prov}] {preview}...")
+    
+    def _apply_selected_lyrics(self):
+        """선택한 가사 적용"""
+        idx = self.search_listbox.curselection()
+        if not idx or not hasattr(self, '_search_results'):
+            return
+        
+        selected_idx = idx[0]
+        prov, lrc_content = self._search_results[selected_idx]
+        
+        if self._on_apply_lyrics_callback:
+            self._on_apply_lyrics_callback(lrc_content, f"{prov}")
+        
+        # 패널 닫기
+        self.search_frame.pack_forget()
+        self.search_btn.configure(fg="#888888")
+    
+    def set_on_apply_lyrics(self, callback: Callable[[str, str], None]):
+        """가사 적용 콜백 설정"""
+        self._on_apply_lyrics_callback = callback
 
-    def show_search_popup(self, current_title, current_artist, search_action: Callable[[str, str], list], apply_action: Callable[[str, str], None]):
-        """검색 팝업 표시"""
-        popup = tk.Toplevel(self.root)
-        popup.title("가사 검색")
-        popup.geometry("400x500")
-        popup.configure(bg="#1a1a2e")
-        popup.resizable(False, False)
-        
-        # 항상 위에
-        popup.attributes('-topmost', True)
-        
-        # 입력 필드
-        input_frame = tk.Frame(popup, bg="#1a1a2e", pady=10)
-        input_frame.pack(fill=tk.X, padx=10)
-        
-        tk.Label(input_frame, text="아티스트", bg="#1a1a2e", fg="#888888").pack(anchor="w")
-        artist_entry = tk.Entry(input_frame, bg="#16213e", fg="white", insertbackground="white", relief=tk.FLAT)
-        artist_entry.insert(0, current_artist)
-        artist_entry.pack(fill=tk.X, pady=(0, 5))
-        
-        tk.Label(input_frame, text="제목", bg="#1a1a2e", fg="#888888").pack(anchor="w")
-        title_entry = tk.Entry(input_frame, bg="#16213e", fg="white", insertbackground="white", relief=tk.FLAT)
-        title_entry.insert(0, current_title)
-        title_entry.pack(fill=tk.X)
-        
-        # 검색 버튼
-        def do_search():
-            status_label.configure(text="검색 중...", fg="#ffff00")
-            popup.update()
-            
-            t = title_entry.get()
-            a = artist_entry.get()
-            
-            # 비동기 실행을 위해 스레드 사용 권장되지만, 여기선 콜백 내에서 처리
-            # 메인 스레드 블로킹 방지를 위해 root.after 사용 등 고려해야 함.
-            # 지금은 main.py에서 스레드로 처리하고 리스트 업데이트를 호출하는 방식이 이상적.
-            # 하지만 간단하게 여기서 콜백을 호출하고 결과를 기다리는 구조로 (약간의 프리징 감수)
-            
-            results = search_action(t, a)
-            
-            listbox.delete(0, tk.END)
-            self._search_results = results # 임시 저장
-            
-            if not results:
-                status_label.configure(text="검색 결과가 없습니다.", fg="#ff6b6b")
-            else:
-                status_label.configure(text=f"{len(results)}개의 결과", fg="#00ff00")
-                for prov, lrc in results:
-                    # 미리보기 (첫 줄)
-                    preview = lrc.strip().split('\n')[0][:30]
-                    listbox.insert(tk.END, f"[{prov}] {preview}...")
-        
-        search_btn = tk.Button(input_frame, text="검색", command=do_search, bg="#e94560", fg="white", relief=tk.FLAT)
-        search_btn.pack(fill=tk.X, pady=10)
-        
-        status_label = tk.Label(input_frame, text="", bg="#1a1a2e", fg="#888888")
-        status_label.pack()
-        
-        # 결과 리스트
-        list_frame = tk.Frame(popup, bg="#1a1a2e")
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        listbox = tk.Listbox(list_frame, bg="#16213e", fg="white", selectbackground="#e94560", relief=tk.FLAT)
-        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
-        scrollbar = tk.Scrollbar(list_frame, orient="vertical", command=listbox.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        listbox.config(yscrollcommand=scrollbar.set)
-        
-        # 적용 버튼
-        def apply_selected():
-            idx = listbox.curselection()
-            if not idx:
-                return
-            
-            selected_idx = idx[0]
-            prov, lrc_content = self._search_results[selected_idx]
-            
-            # 적용
-            apply_action(lrc_content, f"{prov} 검색 결과")
-            popup.destroy()
-            
-        apply_btn = tk.Button(popup, text="선택한 가사 적용", command=apply_selected, bg="#202035", fg="white", relief=tk.FLAT)
-        apply_btn.pack(fill=tk.X, padx=10, pady=10)
+    def set_on_search_request(self, callback: Callable):
+        """검색 요청 콜백 설정 (패널 열릴 때 호출)"""
+        self._on_search_callback = callback
 
     def reset_sync_control(self):
         """싱크 컨트롤 초기화"""
@@ -459,7 +635,7 @@ class LyricsOverlay:
         # 키보드 단축키도 유지 (슬라이더 값 변경)
         def adjust_by_key(delta):
             current = self.sync_slider.get()
-            new_val = max(-3000, min(3000, current + delta))
+            new_val = max(-5000, min(5000, current + delta))
             self.sync_slider.set(new_val) # _on_slider_move 트리거됨
             
         self.root.bind("<Left>", lambda e: adjust_by_key(-500))
