@@ -7,6 +7,8 @@ import tkinter as tk
 from tkinter import font as tkfont
 from typing import Optional, Callable
 from dataclasses import dataclass, field
+import win32gui
+import win32con
 
 
 @dataclass
@@ -121,6 +123,10 @@ class LyricsOverlay:
         self.root = tk.Tk()
         self.root.title("YouTube Music Lyrics")
         
+        # 스레드 안전 명령 큐 (트레이 등에서 사용)
+        import queue
+        self._command_queue = queue.Queue()
+        
         # 창 설정
         self._setup_window()
         
@@ -146,6 +152,29 @@ class LyricsOverlay:
         # 최소화 상태
         self._is_minimized = False
         self._pre_minimize_geometry = None
+        
+        # 명령 큐 처리 시작
+        self._process_command_queue()
+    
+    def _process_command_queue(self):
+        """명령 큐에서 명령 처리 (스레드 안전)"""
+        try:
+            while True:
+                try:
+                    cmd = self._command_queue.get_nowait()
+                    if callable(cmd):
+                        cmd()
+                except:
+                    break
+        except:
+            pass
+        
+        # 100ms마다 큐 확인
+        self.root.after(100, self._process_command_queue)
+    
+    def queue_command(self, cmd: Callable):
+        """명령 큐에 추가 (다른 스레드에서 호출 가능)"""
+        self._command_queue.put(cmd)
 
     
     def _setup_window(self):
@@ -171,6 +200,30 @@ class LyricsOverlay:
         
         # 배경색 (다크 테마)
         self.root.configure(bg="#1a1a2e")
+        
+        # 클릭 투과 상태
+        self._click_through_enabled = False
+        
+    def set_click_through(self, enabled: bool):
+        """클릭 투과 모드 설정 (마우스 이벤트를 뒤로 전달)"""
+        self._click_through_enabled = enabled
+        
+        hwnd = win32gui.GetParent(self.root.winfo_id())
+        style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+        
+        if enabled:
+            # WS_EX_TRANSPARENT 스타일 추가 (마우스 투과)
+            # WS_EX_LAYERED는 이미 적용되어 있어야 함 (반투명/투명 창)
+            style = style | win32con.WS_EX_TRANSPARENT | win32con.WS_EX_LAYERED
+            print("[오버레이] 클릭 투과 모드: 켜짐 (마우스가 창을 통과합니다)")
+        else:
+            # WS_EX_TRANSPARENT 스타일 제거
+            style = style & ~win32con.WS_EX_TRANSPARENT
+            # WS_EX_LAYERED는 유지 (투명도 조절 위해 필요)
+            style = style | win32con.WS_EX_LAYERED
+            print("[오버레이] 클릭 투과 모드: 꺼짐 (마우스 조작 가능)")
+            
+        win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, style)
         
         # 테두리 없음
         self.root.overrideredirect(True)
@@ -501,6 +554,24 @@ class LyricsOverlay:
             self._on_close()
         self.root.destroy()
     
+    def center_window(self):
+        """창을 화면 중앙으로 이동"""
+        self.root.update_idletasks()
+        
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        window_width = self.root.winfo_width()
+        window_height = self.root.winfo_height()
+        
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        
+        self.root.geometry(f"+{x}+{y}")
+        self.root.deiconify()  # 혹시 숨겨져 있으면 표시
+        self.root.lift()  # 최상위로
+        self.root.focus_force()  # 포커스
+        print(f"[UI] 창을 화면 중앙으로 이동 ({x}, {y})")
+    
     def _toggle_sync_panel(self):
         """싱크 패널 토글"""
         if self.sync_frame.winfo_viewable():
@@ -573,6 +644,18 @@ class LyricsOverlay:
             self.search_frame.pack_forget()
             self.search_btn.configure(fg="#888888")
         else:
+            self.search_frame.pack(fill=tk.X, after=self.artist_label)
+            self.search_btn.configure(fg="#e94560")
+    
+    def show_search_panel(self):
+        """검색 패널 열기 (이미 열려있으면 유지)"""
+        # 다른 패널 닫기
+        if self.settings_frame.winfo_viewable():
+            self.settings_frame.pack_forget()
+            self.settings_btn.configure(fg="#4a4a6a")
+        
+        # 검색 패널이 닫혀있으면 열기
+        if not self.search_frame.winfo_viewable():
             self.search_frame.pack(fill=tk.X, after=self.artist_label)
             self.search_btn.configure(fg="#e94560")
     
@@ -678,6 +761,24 @@ class LyricsOverlay:
         
         # 1.5초 후 제거
         self.root.after(1500, toast.destroy)
+    
+    def show_loading_message(self, message: str = "🔍 가사 검색 중..."):
+        """로딩 메시지 표시"""
+        # 기존 가사 내용 지우고 로딩 메시지 표시
+        for widget in self.lyrics_frame.winfo_children():
+            widget.destroy()
+        
+        loading_label = tk.Label(
+            self.lyrics_frame,
+            text=message,
+            bg="#1a1a2e",  # 가사 프레임 배경색과 일치
+            fg="#888888",
+            font=("Segoe UI", 12),
+            wraplength=350,  # 긴 메시지 줄바꿈
+            justify="center",
+            pady=50
+        )
+        loading_label.pack(expand=True, fill='both')
     
     def update_track_info(self, title: str, artist: str):
         """곡 정보 업데이트"""

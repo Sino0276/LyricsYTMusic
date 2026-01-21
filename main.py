@@ -29,11 +29,18 @@ except ImportError:
     TRANSLATION_AVAILABLE = False
     print("[경고] 번역 모듈 로드 실패. 번역 기능이 비활성화됩니다.")
 
+# 시스템 트레이 (선택적)
+try:
+    from system_tray import SystemTray, TRAY_AVAILABLE
+except ImportError:
+    TRAY_AVAILABLE = False
+    SystemTray = None
+
 
 class LyricsApp:
     """가사 오버레이 애플리케이션"""
     
-    POLL_INTERVAL_MS = 1000  # 곡 변경 감지 간격 (1초)
+    POLL_INTERVAL_MS = 500  # 곡 변경 감지 간격 (0.5초 - 빠른 감지)
     SYNC_INTERVAL_MS = 500   # 가사 동기화 간격 (0.5초)
     POLL_INTERVAL_SLOW_MS = 5000  # 최소화 시 감지 간격 (5초)
     SYNC_INTERVAL_SLOW_MS = 2000  # 최소화 시 동기화 간격 (2초)
@@ -68,17 +75,47 @@ class LyricsApp:
         
         # 설정 로드
         self._settings = self._load_settings()
+        
+        if TRAY_AVAILABLE and SystemTray:
+            self.tray = SystemTray()
+            self.tray.set_on_center_window(self._center_overlay)
+            self.tray.set_on_show_window(self._show_overlay)
+            self.tray.set_on_toggle_click_through(self._toggle_click_through)
+            self.tray.set_on_exit(self._on_close)
+            
+    def _toggle_click_through(self, enabled: bool):
+        """클릭 투과 모드 토글 콜백"""
+        print(f"[메인] 클릭 투과 모드 변경: {enabled}")
+        
+        # 1. 오버레이에 적용
+        self.overlay.set_click_through(enabled)
+            
+        # 2. 설정 업데이트 및 저장
+        self._settings["click_through_mode"] = enabled
+        self._save_settings(self._settings)
+        
+        # 3. 트레이 메뉴 상태 동기화 (필요한 경우)
+        if self.tray:
+            self.tray.update_click_through_state(enabled)
     
     def _load_settings(self) -> dict:
         """설정 파일 로드"""
         import json
         settings_file = "settings.json"
-        default_settings = {"multi_source_search": False}
+        default_settings = {
+            "multi_source_search": False,
+            "click_through_mode": False
+        }
         
         try:
             if os.path.exists(settings_file):
                 with open(settings_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    settings = json.load(f)
+                    # 기본값 병합 (새 설정 항목이 없을 경우를 대비)
+                    for key, value in default_settings.items():
+                        if key not in settings:
+                            settings[key] = value
+                    return settings
         except Exception as e:
             print(f"[설정] 로드 실패: {e}")
         
@@ -99,6 +136,15 @@ class LyricsApp:
 
     def run(self):
         """애플리케이션 실행"""
+        # 초기 클릭 투과 모드 적용
+        initial_click_through = self._settings.get("click_through_mode", False)
+        self.overlay.set_click_through(initial_click_through)
+        
+        # 시스템 트레이 시작
+        if self.tray:
+            self.tray.start(initial_click_through_state=initial_click_through)
+        
+        # 폴링 기반 곡 감지 (이벤트 모드는 asyncio 충돌 문제로 비활성화)
         self._check_track()
         self._schedule_track_check()
         
@@ -120,6 +166,57 @@ class LyricsApp:
             self._schedule_lyrics_sync()
             
         self.overlay.run()
+    
+    def _on_track_changed_event(self, track):
+        """이벤트 기반 곡 변경 처리 (즉시 호출됨)"""
+        if track != self._current_track:
+            self._current_track = track
+            self._current_line_index = -1
+            self._sync_offset = 0
+            
+            self._current_lyrics = []
+            
+            if self.overlay.is_alive():
+                self.overlay.reset_sync_control()
+            
+            self._stop_translation = True
+            
+            if track:
+                print(f"[이벤트감지] 곡 변경: {track.title} - {track.artist}")
+                self._on_track_changed(track)
+            else:
+                self.overlay.update_lyrics([])
+    
+    def _center_overlay(self):
+        """오버레이를 화면 중앙으로 이동 (트레이 메뉴에서 호출)"""
+        # 스레드 안전: 명령 큐를 통해 메인 스레드에서 실행
+        self.overlay.queue_command(self.overlay.center_window)
+    
+    def _show_overlay(self):
+        """오버레이 표시 (트레이 메뉴에서 호출)"""
+        def show():
+            self.overlay.root.deiconify()
+            self.overlay.root.lift()
+            self.overlay.root.focus_force()
+        
+        self.overlay.queue_command(show)
+    
+    def _delayed_start_polling(self):
+        """지연 폴링 시작 (이벤트 루프 충돌 방지)"""
+        self._check_track()
+        self._schedule_track_check()
+    
+    def _schedule_track_check_slow(self):
+        """저속 폴링 (백업용, 이벤트 모드에서만 사용)"""
+        if self._running and self.overlay.is_alive():
+            # 이벤트 모드가 아니면 일반 폴링으로 전환
+            if not self.track_detector.is_event_mode:
+                self._schedule_track_check()
+                return
+            
+            # 3초마다 백업 체크 (이벤트 누락 대비)
+            self._check_track()
+            self.overlay.schedule(3000, self._schedule_track_check_slow)
     
     def _on_search_request(self):
         """검색 패널 열릴 때 호출 - 검색 필드 업데이트"""
@@ -230,7 +327,7 @@ class LyricsApp:
         print(f"곡 변경 감지: {track.title} - {track.artist}")
         
         self.overlay.update_track_info(track.title, track.artist)
-        self.overlay.show_loading()
+        self.overlay.show_loading_message()
         
         # 가사 검색 (백그라운드)
         def fetch_lyrics():
@@ -258,8 +355,17 @@ class LyricsApp:
             else:
                 # 자동검색 실패 시 수동검색 팝업 자동 표시
                 if self.overlay.is_alive():
-                    print("[가사] 자동검색 실패, 수동검색 팝업 표시")
-                    self.overlay.schedule(0, self._on_search_request)
+                    print("[가사] 자동검색 실패, 수동검색 패널 표시")
+                    
+                    def show_manual_search():
+                        # 검색 필드 업데이트
+                        self._on_search_request()
+                        # 검색 패널 열기
+                        self.overlay.show_search_panel()
+                        # "검색 실패" 메시지 표시
+                        self.overlay.show_loading_message("❌ 가사를 찾을 수 없습니다. 수동으로 검색해 주세요.")
+                    
+                    self.overlay.schedule(0, show_manual_search)
         
         thread = threading.Thread(target=fetch_lyrics, daemon=True)
         thread.start()
@@ -384,7 +490,25 @@ class LyricsApp:
         """종료 처리"""
         self._running = False
         self._stop_translation = True
+        
+        # 트레이 아이콘 정리
+        if self.tray:
+            self.tray.stop()
+        
         print("애플리케이션 종료")
+        
+        # Python 프로세스 완전 종료 보장
+        
+        # 오버레이 창이 살아있으면 닫기
+        try:
+            if self.overlay.is_alive():
+                self.overlay.root.destroy()
+        except:
+            pass
+            
+        # sys.exit(0) 대신 os._exit(0) 사용: SystemExit 예외 발생 없이 강제 종료
+        # pystray 콜백 내부에서의 SystemExit 트레이스백 방지
+        os._exit(0)
 
 
 def main():

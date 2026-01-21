@@ -1,6 +1,6 @@
 """
 현재 재생 중인 YouTube Music 곡 정보를 감지합니다.
-1순위: Windows Media Session API (백그라운드에서도 작동)
+1순위: Windows Media Session API (폴링)
 2순위: 브라우저 창 제목 파싱
 """
 
@@ -27,8 +27,6 @@ class TrackInfo:
     def __eq__(self, other):
         if not isinstance(other, TrackInfo):
             return False
-        # 제목과 아티스트가 같으면 같은 곡으로 간주 (길이는 약간 다를 수 있으므로 제외하거나 포함?)
-        # 곡이 바뀌지 않았는데 길이 정보만 갱신될 수 있으므로, 식별자로는 제목+아티스트만 사용
         return self.title == other.title and self.artist == other.artist
     
     def __hash__(self):
@@ -46,11 +44,17 @@ class TrackDetector:
     
     # YouTube Music 탭 제목에서 곡 정보 부분 추출
     YT_MUSIC_PATTERN = re.compile(r"^(.+?)\s*[|]\s*YouTube Music$")
+    YT_MUSIC_PREFIX_PATTERN = re.compile(r"^YouTube Music - (.+)$")
     
     def __init__(self):
         self._current_track: Optional[TrackInfo] = None
         self._callbacks: list[Callable[[TrackInfo], None]] = []
         self._use_media_session = MEDIA_SESSION_AVAILABLE
+    
+    @property
+    def is_event_mode(self) -> bool:
+        """이벤트 모드 활성화 여부 (현재 비활성화)"""
+        return False
     
     def get_current_track(self) -> Optional[TrackInfo]:
         """현재 재생 중인 곡 정보 반환 (Media Session API 우선)"""
@@ -129,20 +133,19 @@ class TrackDetector:
         
         지원 형식:
         - "곡 제목 - 아티스트"
-        - "곡 제목 / 아티스트 COVER"
-        - "곡 제목 (feat. 아티스트)"
-        - "곡 제목 [아티스트 x 아티스트2]"
+        - "곡 제목 / 아티스트 COVER" (우선 처리)
         - "곡 제목" (아티스트 없음)
         """
-        # 패턴 1: " - " 구분자 (가장 일반적)
+        # 패턴: " / " 구분자 (커버곡 등에서 자주 사용됨, " - "보다 우선순위 높임)
+        if " / " in raw_info:
+            parts = raw_info.split(" / ", 1)
+            # 보통 "제목 / 아티스트"
+            return parts[0].strip(), parts[1].strip()
+
+        # 패턴: " - " 구분자 (가장 일반적)
         if " - " in raw_info:
             parts = raw_info.split(" - ", 1)
             return parts[0].strip(), parts[1].strip()
-        
-        # 패턴 2: " / " 구분자 (커버곡 등)
-        if " / " in raw_info:
-            parts = raw_info.split(" / ", 1)
-            # 제목 부분에서 원곡 아티스트 정보 추출 시도
             title_part = parts[0].strip()
             cover_artist = parts[1].strip()
             

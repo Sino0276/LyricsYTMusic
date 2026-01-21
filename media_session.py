@@ -132,6 +132,151 @@ def is_youtube_music(media: MediaInfo) -> bool:
     return any(browser in source_lower for browser in ['chrome', 'firefox', 'msedge', 'edge'])
 
 
+class MediaSessionWatcher:
+    """이벤트 기반 미디어 세션 감시 (곡 변경 즉시 감지)"""
+    
+    def __init__(self, on_track_changed: callable = None):
+        """
+        Args:
+            on_track_changed: 곡 변경 시 호출될 콜백 (MediaInfo 인자)
+        """
+        self._on_track_changed = on_track_changed
+        self._manager = None
+        self._current_session = None
+        self._last_media_info = None
+        self._running = False
+        self._loop = None
+        self._session_changed_token = None
+        self._media_properties_token = None
+    
+    async def _start_async(self):
+        """비동기 감시 시작"""
+        try:
+            self._manager = await MediaManager.request_async()
+            
+            # 세션 변경 이벤트 구독
+            self._session_changed_token = self._manager.add_current_session_changed(
+                self._on_session_changed
+            )
+            
+            # 초기 세션 연결
+            await self._connect_session()
+            
+            print("[MediaWatcher] 이벤트 구독 시작됨 (즉시 감지 모드)")
+            
+        except Exception as e:
+            print(f"[MediaWatcher] 시작 오류: {e}")
+    
+    def _on_session_changed(self, sender, args):
+        """세션 변경 이벤트 핸들러"""
+        print("[MediaWatcher] 세션 변경 감지")
+        # 비동기 작업은 이벤트 루프에서 실행
+        if self._loop and self._running:
+            asyncio.run_coroutine_threadsafe(self._connect_session(), self._loop)
+    
+    async def _connect_session(self):
+        """현재 세션에 연결하고 이벤트 구독"""
+        try:
+            # 이전 세션 이벤트 해제
+            if self._current_session and self._media_properties_token:
+                try:
+                    self._current_session.remove_media_properties_changed(self._media_properties_token)
+                except:
+                    pass
+            
+            # 새 세션 가져오기
+            self._current_session = self._manager.get_current_session()
+            
+            if self._current_session:
+                # 미디어 속성 변경 이벤트 구독
+                self._media_properties_token = self._current_session.add_media_properties_changed(
+                    self._on_media_properties_changed
+                )
+                
+                # 초기 미디어 정보 가져오기
+                await self._check_media()
+                
+        except Exception as e:
+            print(f"[MediaWatcher] 세션 연결 오류: {e}")
+    
+    def _on_media_properties_changed(self, sender, args):
+        """미디어 속성 변경 이벤트 핸들러 (곡 변경 등)"""
+        print("[MediaWatcher] 미디어 속성 변경 감지")
+        if self._loop and self._running:
+            asyncio.run_coroutine_threadsafe(self._check_media(), self._loop)
+    
+    async def _check_media(self):
+        """현재 미디어 정보 확인 및 콜백 호출"""
+        try:
+            if not self._current_session:
+                return
+            
+            media_props = await self._current_session.try_get_media_properties_async()
+            
+            if not media_props or not media_props.title:
+                return
+            
+            timeline = self._current_session.get_timeline_properties()
+            duration_ms = int(timeline.end_time.total_seconds() * 1000)
+            source_app = self._current_session.source_app_user_model_id or "Unknown"
+            
+            new_info = MediaInfo(
+                title=media_props.title or "",
+                artist=media_props.artist or "",
+                album=media_props.album_title or "",
+                source_app=source_app,
+                position_ms=_calculate_correct_position(self._current_session),
+                duration_ms=duration_ms
+            )
+            
+            # 곡이 변경되었는지 확인
+            is_changed = (
+                self._last_media_info is None or
+                self._last_media_info.title != new_info.title or
+                self._last_media_info.artist != new_info.artist
+            )
+            
+            if is_changed:
+                print(f"[MediaWatcher] 곡 변경: {new_info.title} - {new_info.artist}")
+                self._last_media_info = new_info
+                
+                if self._on_track_changed:
+                    self._on_track_changed(new_info)
+                    
+        except Exception as e:
+            print(f"[MediaWatcher] 미디어 확인 오류: {e}")
+    
+    def start(self):
+        """감시 시작 (별도 스레드에서 이벤트 루프 실행)"""
+        import threading
+        
+        def run_loop():
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._running = True
+            
+            self._loop.run_until_complete(self._start_async())
+            
+            # 이벤트 루프 유지
+            while self._running:
+                self._loop.run_until_complete(asyncio.sleep(0.1))
+            
+            self._loop.close()
+        
+        self._thread = threading.Thread(target=run_loop, daemon=True)
+        self._thread.start()
+        print("[MediaWatcher] 워처 스레드 시작됨")
+    
+    def stop(self):
+        """감시 중지"""
+        self._running = False
+        print("[MediaWatcher] 워처 중지됨")
+    
+    def get_current_media(self) -> Optional[MediaInfo]:
+        """현재 미디어 정보 반환 (캐시된 값)"""
+        return self._last_media_info
+
+
 if __name__ == "__main__":
     print("Windows Media Session 테스트")
     print("=" * 50)
@@ -145,3 +290,20 @@ if __name__ == "__main__":
         print(f"소스 앱: {media.source_app}")
     else:
         print("재생 중인 미디어 없음")
+    
+    # 이벤트 감시 테스트
+    print("\n이벤트 감시 테스트 (Ctrl+C로 종료)")
+    
+    def on_change(media):
+        print(f"[콜백] 곡 변경: {media.title} - {media.artist}")
+    
+    watcher = MediaSessionWatcher(on_track_changed=on_change)
+    watcher.start()
+    
+    try:
+        import time
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        watcher.stop()
+        print("종료")

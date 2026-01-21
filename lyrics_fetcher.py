@@ -25,13 +25,19 @@ class LyricsFetcher:
 
     # ... (생략된 메서드들) ...
 
-    def search_candidates(self, query: str) -> list[tuple[str, str]]:
+    def search_candidates(self, query: str, return_first: bool = False) -> list[tuple[str, str]]:
         """
-        주어진 쿼리로 여러 소스에서 가사 후보 검색
+        주어진 쿼리로 여러 소스에서 가사 후보 검색 (병렬)
+        
+        Args:
+            query: 검색 쿼리
+            return_first: True면 첫 결과 찾으면 즉시 반환 (더 빠름)
         
         Returns:
             [(ProviderName, LyricsSnippet), ...]
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
         results = []
         # 검색할 프로바이더 목록
         providers = [
@@ -41,21 +47,34 @@ class LyricsFetcher:
             'megalobiz'
         ]
         
-        print(f"[수동검색] 쿼리: {query}")
+        print(f"[검색] 쿼리: {query} (병렬 검색)")
         
-        # 순차 검색 (병렬 처리가 더 좋지만, winsdk 등과의 충돌 방지 및 안전성을 위해 순차)
-        for prov in providers:
+        def search_provider(prov):
+            """개별 프로바이더 검색"""
             try:
-                print(f"[수동검색] 소스: {prov}")
-                # 특정 프로바이더만 지정하여 검색
                 lrc = syncedlyrics.search(query, providers=[prov])
-                
                 if lrc:
-                    results.append((prov, lrc))
-                    
+                    return (prov, lrc)
             except Exception as e:
-                print(f"[수동검색] 오류 ({prov}): {e}")
-                
+                print(f"[검색] 오류 ({prov}): {e}")
+            return None
+        
+        # 병렬 검색 (최대 4개 동시 실행)
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(search_provider, prov): prov for prov in providers}
+            
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    prov, lrc = result
+                    print(f"[검색] {prov}에서 결과 찾음!")
+                    results.append(result)
+                    
+                    # 첫 결과 즉시 반환 옵션
+                    if return_first:
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        return results
+        
         return results
 
     def get_lyrics_multi_source(self, title: str, artist: str, duration_ms: Optional[int] = None) -> Optional[str]:

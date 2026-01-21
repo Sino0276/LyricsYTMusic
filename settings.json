@@ -1,3 +1,4 @@
 {
-  "multi_source_search": true
+  "multi_source_search": true,
+  "click_through_mode": false
 }
