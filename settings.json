@@ -1,4 +1,8 @@
 {
   "multi_source_search": true,
-  "click_through_mode": false
+  "click_through_mode": true,
+  "background_color": "#1a1a2e",
+  "text_color": "#e0e0e0",
+  "highlight_color": "#e94560",
+  "opacity": 0.9
 }

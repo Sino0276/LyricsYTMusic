@@ -6,8 +6,13 @@ YouTube Music 가사 오버레이 애플리케이션
 import threading
 import time
 import os
+import sys
+import re
+import tkinter as tk
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
+from settings_manager import SettingsManager
 from track_detector import TrackDetector, TrackInfo
 from lyrics_fetcher import LyricsFetcher
 from lyrics_parser import LyricsParser, LyricLine
@@ -48,7 +53,14 @@ class LyricsApp:
     HIGHLIGHT_COLOR = "#ff6b6b"  # 현재 가사 색상 (빨간색 계열)
     
     def __init__(self):
-        # 모듈 초기화
+        # 0. UI 루트 (가장 먼저)
+        self.root = tk.Tk()
+        self.root.withdraw()
+        
+        # 1. 설정 관리자 초기화
+        self.settings = SettingsManager()
+        
+        # 2. 모듈 초기화
         self.track_detector = TrackDetector()
         self.lyrics_fetcher = LyricsFetcher()
         self.lyrics_parser = LyricsParser()
@@ -56,12 +68,18 @@ class LyricsApp:
         # 번역 모듈
         self.translator = LyricsTranslator() if TRANSLATION_AVAILABLE else None
         
-        # UI
+        # 3. UI - 오버레이 생성
         self.overlay = LyricsOverlay()
         self.overlay.set_on_close(self._on_close)
         
-        # 상태
-        self._running = True
+        # 설정 변경 옵저버 등록
+        self.settings.add_observer(self._on_settings_update)
+        
+        # 오버레이 설정 저장 연결 -> SettingsManager 업데이트
+        self.overlay.set_on_settings_save(self.settings.update)
+        
+        # 4. 상태 변수
+        # self._running은 start/stop 메서드에 의해 관리되거나 run에서 사용됨 (위치 이동)
         self._current_track: Optional[TrackInfo] = None
         self._current_lyrics: list[LyricLine] = []
         self._current_line_index: int = -1
@@ -73,74 +91,93 @@ class LyricsApp:
         # 싱크 조절
         self._sync_offset = 0
         
-        # 설정 로드
-        self._settings = self._load_settings()
-        
+        # 5. 시스템 트레이 초기화
+        self.tray = None
         if TRAY_AVAILABLE and SystemTray:
-            self.tray = SystemTray()
-            self.tray.set_on_center_window(self._center_overlay)
-            self.tray.set_on_show_window(self._show_overlay)
-            self.tray.set_on_toggle_click_through(self._toggle_click_through)
-            self.tray.set_on_exit(self._on_close)
+            try:
+                self.tray = SystemTray()
+                self.tray.set_on_center_window(self._center_overlay)
+                self.tray.set_on_show_window(self._show_overlay)
+                self.tray.set_on_toggle_click_through(self._toggle_click_through)
+                if hasattr(self.tray, 'set_on_exit'):
+                    self.tray.set_on_exit(self.quit)
+            except Exception as e:
+                print(f"[메인] 트레이 초기화 실패: {e}")
+        
+        # 스레드 풀
+        self.executor = ThreadPoolExecutor(max_workers=3)
+        self._running = True
+        
+        # 초기 설정 적용
+        self._apply_settings(self.settings.get_all())
             
+    def quit(self):
+        """애플리케이션 종료"""
+        self._on_close()
+        
     def _toggle_click_through(self, enabled: bool):
         """클릭 투과 모드 토글 콜백"""
         print(f"[메인] 클릭 투과 모드 변경: {enabled}")
         
-        # 1. 오버레이에 적용
-        self.overlay.set_click_through(enabled)
+        # 1. 오버레이에 적용 # Removed, handled by _apply_settings via SettingsManager observer
+        # self.overlay.set_click_through(enabled)
             
         # 2. 설정 업데이트 및 저장
-        self._settings["click_through_mode"] = enabled
-        self._save_settings(self._settings)
+        self.settings.set("click_through_mode", enabled) # Use SettingsManager
         
-        # 3. 트레이 메뉴 상태 동기화 (필요한 경우)
+        # 3. 트레이 메뉴 상태 동기화 (필요한 경우) # Removed, handled by _apply_settings via SettingsManager observer
+        # if self.tray:
+        #     self.tray.update_click_through_state(enabled)
+    
+    def _apply_settings(self, settings: dict):
+        """설정을 컴포넌트에 적용 (옵저버 콜백)"""
+        # 1. 색상 적용
+        self.overlay.set_colors(
+            bg_color=settings.get("background_color"),
+            text_color=settings.get("text_color"),
+            highlight_color=settings.get("highlight_color")
+        )
+        # 2. 오버레이 설정 UI 업데이트
+        self.overlay.update_settings_ui(settings)
+        
+        # 3. 클릭 투과 모드 적용 (초기화 시 또는 변경 시)
+        # 주의: 무한 루프 방지 (트레이 -> 설정 변경 -> 옵저버 -> 트레이 업데이트)
+        click_through = settings.get("click_through_mode", False)
+        self.overlay.set_click_through(click_through)
         if self.tray:
-            self.tray.update_click_through_state(enabled)
-    
-    def _load_settings(self) -> dict:
-        """설정 파일 로드"""
-        import json
-        settings_file = "settings.json"
-        default_settings = {
-            "multi_source_search": False,
-            "click_through_mode": False
-        }
+            self.tray.update_click_through_state(click_through)
+            
+        # 4. 투명도 적용
+        opacity = settings.get("opacity", 0.9)
+        self.overlay.set_opacity(opacity)
         
-        try:
-            if os.path.exists(settings_file):
-                with open(settings_file, 'r', encoding='utf-8') as f:
-                    settings = json.load(f)
-                    # 기본값 병합 (새 설정 항목이 없을 경우를 대비)
-                    for key, value in default_settings.items():
-                        if key not in settings:
-                            settings[key] = value
-                    return settings
-        except Exception as e:
-            print(f"[설정] 로드 실패: {e}")
+        # 5. 기타 설정 적용 (필요 시) # Kept this comment
+        # multi_source_search는 사용하는 시점에 self._settings를 참조하므로 별도 조치 불필요
         
-        return default_settings
-    
-    def _save_settings(self, settings: dict):
-        """설정 파일 저장"""
-        import json
-        settings_file = "settings.json"
-        
-        try:
-            with open(settings_file, 'w', encoding='utf-8') as f:
-                json.dump(settings, f, ensure_ascii=False, indent=2)
-            self._settings = settings
-            print(f"[설정] 저장 완료: {settings}")
-        except Exception as e:
-            print(f"[설정] 저장 실패: {e}")
+        # 4. 강제 리페인트 (색상 변경 시 가사 다시 그리기 위해) # Kept this comment
+        # 현재 트랙 정보를 다시 업데이트하는 척 하여 리프레시 유도
+        if hasattr(self, '_current_track') and self._current_track: # Changed self.current_track to self._current_track
+             # 가사가 있다면 다시 그리기 (색상 적용)
+             # overlay.update_lyrics를 직접 호출하기엔 가사 데이터가 main에 없음 (캐시에 있음)
+             # 간단히: overlay가 set_colors 내부적으로 처리하거나, 여기서 유도.
+             pass
+
+    def _on_settings_update(self, settings: dict):
+        """설정 변경 시 호출되는 콜백"""
+        print("[메인] 설정 변경 감지됨, UI 업데이트 실행")
+        self.root.after(0, lambda: self._apply_settings(settings))
 
     def run(self):
         """애플리케이션 실행"""
-        # 초기 클릭 투과 모드 적용
-        initial_click_through = self._settings.get("click_through_mode", False)
-        self.overlay.set_click_through(initial_click_through)
+        # 초기 클릭 투과 모드 적용 # Removed, handled by _apply_settings
+        # initial_click_through = self._settings.get("click_through_mode", False)
+        # self.overlay.set_click_through(initial_click_through)
+        
+        # 초기 색상 및 설정 적용 # Removed, handled by _apply_settings
+        # self._apply_settings_to_components()
         
         # 시스템 트레이 시작
+        initial_click_through = self.settings.get("click_through_mode", False) # Use self.settings
         if self.tray:
             self.tray.start(initial_click_through_state=initial_click_through)
         
@@ -148,15 +185,12 @@ class LyricsApp:
         self._check_track()
         self._schedule_track_check()
         
+        
         # 싱크 조절 콜백 연결
         self.overlay.set_on_sync_adjust(self._adjust_sync)
         
         # 검색 요청 콜백 연결
         self.overlay.set_on_search_request(self._on_search_request)
-        
-        # 설정 저장 콜백 연결 (패널 방식)
-        self.overlay.set_on_settings_save(self._save_settings)
-        self.overlay.update_settings_ui(self._settings)
         
         # 검색 실행 콜백 연결
         self.overlay.set_on_do_search(self._do_search_action)
@@ -200,6 +234,25 @@ class LyricsApp:
             self.overlay.root.focus_force()
         
         self.overlay.queue_command(show)
+            
+    def _schedule_track_check(self):
+        """곡 감지 스케줄"""
+        if self._running and self.overlay.is_alive():
+            self._check_track()
+            # 최소화 시 폴링 간격 증가
+            interval = self.POLL_INTERVAL_SLOW_MS if self.overlay.is_minimized() else self.POLL_INTERVAL_MS
+            self.overlay.schedule(interval, self._schedule_track_check)
+    
+    def _schedule_lyrics_sync(self):
+        """가사 동기화 스케줄"""
+        if self._running and self.overlay.is_alive():
+            # 최소화 시 동기화 안 함
+            if not self.overlay.is_minimized():
+                self._sync_lyrics()
+            # 최소화 시 폴링 간격 증가
+            interval = self.SYNC_INTERVAL_SLOW_MS if self.overlay.is_minimized() else self.SYNC_INTERVAL_MS
+            self.overlay.schedule(interval, self._schedule_lyrics_sync)
+
     
     def _delayed_start_polling(self):
         """지연 폴링 시작 (이벤트 루프 충돌 방지)"""
@@ -227,7 +280,6 @@ class LyricsApp:
         current_artist = self._current_track.artist
         
         # 제목에서 원곡 아티스트 추출 시도 (괄호 내용)
-        import re
         extracted_artists = re.findall(r'[\[\(\{]([^\]\)\}]+)[\]\)\}]', current_title)
         
         # 추출된 아티스트 중 원곡 정보일 가능성이 높은 것 선택
@@ -281,24 +333,8 @@ class LyricsApp:
         time.sleep(0.5)
         self._start_translation(track)
     
-    def _schedule_track_check(self):
-        """곡 감지 스케줄"""
-        if self._running and self.overlay.is_alive():
-            self._check_track()
-            # 최소화 시 폴링 간격 증가
-            interval = self.POLL_INTERVAL_SLOW_MS if self.overlay.is_minimized() else self.POLL_INTERVAL_MS
-            self.overlay.schedule(interval, self._schedule_track_check)
-    
-    def _schedule_lyrics_sync(self):
-        """가사 동기화 스케줄"""
-        if self._running and self.overlay.is_alive():
-            # 최소화 시 동기화 안 함 (어차피 댄 안 보이니까)
-            if not self.overlay.is_minimized():
-                self._sync_lyrics()
-            # 최소화 시 폴링 간격 증가
-            interval = self.SYNC_INTERVAL_SLOW_MS if self.overlay.is_minimized() else self.SYNC_INTERVAL_MS
-            self.overlay.schedule(interval, self._schedule_lyrics_sync)
-    
+
+            
     def _check_track(self):
         """현재 곡 확인 및 업데이트"""
         track = self.track_detector.get_current_track()
@@ -331,11 +367,9 @@ class LyricsApp:
         
         # 가사 검색 (백그라운드)
         def fetch_lyrics():
-            # 설정에 따라 검색 방식 선택
-            if self._settings.get("multi_source_search", False):
-                lyrics_text = self.lyrics_fetcher.get_lyrics_multi_source(track.title, track.artist, track.duration_ms)
-            else:
-                lyrics_text = self.lyrics_fetcher.get_lyrics(track.title, track.artist, track.duration_ms)
+            # 설정에 따라 검색 수행
+            multi_source = self.settings.get("multi_source_search", False)
+            lyrics_text = self.lyrics_fetcher.search_lyrics(track.title, track.artist, track.duration_ms, multi_source=multi_source)
             
             if not self._running or self._current_track != track:
                 return
@@ -381,36 +415,38 @@ class LyricsApp:
                 print("[번역] 번역 불필요 (언어 감지 결과)")
                 return
             
-            print("[번역] 번역 작업 시작...")
+            print("[번역] 일괄 번역 작업 시작...")
             
-            # 2. 한 줄씩 번역
-            for i, line in enumerate(self._current_lyrics):
+            # 2. 일괄 번역 (10줄씩)
+            texts_to_translate = [line.text for line in self._current_lyrics]
+            batch_size = 10
+            
+            for batch_start in range(0, len(texts_to_translate), batch_size):
                 if self._stop_translation or self._current_track != track:
+                    print("[번역] 작업 중단됨")
                     break
-                    
-                if not line.text:
-                    continue
                 
-                # 이미 번역된 경우 패스 (캐싱 등으로)
-                if line.translation:
-                    continue
-                    
+                batch_end = min(batch_start + batch_size, len(texts_to_translate))
+                batch_texts = texts_to_translate[batch_start:batch_end]
+                
                 try:
-                    # API 속도 제한 고려하여 약간의 지연
-                    # time.sleep(0.05) 
+                    # 일괄 번역 호출
+                    results = self.translator.translate_batch(batch_texts, batch_size=batch_size)
                     
-                    result = self.translator.translate_line(line.text)
-                    if result:
-                        line.translation = result.translation
-                        line.romanization = result.romanization
+                    # 결과 적용
+                    for i, result in enumerate(results):
+                        if result:
+                            line_idx = batch_start + i
+                            if line_idx < len(self._current_lyrics):
+                                self._current_lyrics[line_idx].translation = result.translation
+                                self._current_lyrics[line_idx].romanization = result.romanization
+                    
+                    # 배치마다 UI 업데이트
+                    if self.overlay.is_alive():
+                        self.overlay.schedule(0, self._display_lyrics)
                         
-                        # UI 업데이트 (10줄마다 또는 중요 라인마다 할 수도 있지만, 일단 실시간 반영)
-                        # 현재 화면에 보이는 라인이면 즉시 업데이트가 좋음
-                        if self.overlay.is_alive():
-                            self.overlay.schedule(0, self._display_lyrics)
-                            
                 except Exception as e:
-                    print(f"[번역] 라인 처리 오류: {e}")
+                    print(f"[번역] 배치 처리 오류: {e}")
             
             print("[번역] 작업 완료")
             
@@ -506,9 +542,12 @@ class LyricsApp:
         except:
             pass
             
-        # sys.exit(0) 대신 os._exit(0) 사용: SystemExit 예외 발생 없이 강제 종료
-        # pystray 콜백 내부에서의 SystemExit 트레이스백 방지
-        os._exit(0)
+        # 정상적인 종료 처리
+        try:
+            sys.exit(0)
+        except SystemExit:
+            # pystray 콜백에서 SystemExit이 잡히면 os._exit 사용
+            os._exit(0)
 
 
 def main():

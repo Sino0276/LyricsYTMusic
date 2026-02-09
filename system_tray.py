@@ -66,8 +66,8 @@ class SystemTray:
     
     def _toggle_click_through(self, icon, item):
         """클릭 투과 토글 메뉴 클릭"""
-        # 현재 상태의 반대로 토글
-        new_state = not item.checked
+        # 현재 내부 상태의 반대로 토글 (item.checked 무시 - 동기화 문제 방지)
+        new_state = not self._click_through_state
         if self._on_toggle_click_through:
             self._on_toggle_click_through(new_state)
     

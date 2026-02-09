@@ -154,15 +154,27 @@ class LyricsFetcher:
         self._cache[cache_key] = lyrics
         self._save_cache()
 
+    def search_lyrics(self, title: str, artist: str, duration_ms: Optional[int] = None, multi_source: bool = False) -> Optional[str]:
+        """
+        통합 가사 검색 메서드 (단일/다중 소스 분기 처리)
+        """
+        if multi_source:
+             return self.get_lyrics_multi_source(title, artist, duration_ms)
+        else:
+             return self.get_lyrics(title, artist, duration_ms)
+
     def get_lyrics(self, title: str, artist: str, duration_ms: Optional[int] = None) -> Optional[str]:
         """
-        가사 검색 (LRC 형식)
+        가사 검색 (LRC 형식) - 병렬 검색 + 우선순위
         
         Args:
             title: 곡 제목
             artist: 아티스트
             duration_ms: 곡 길이 (밀리초) - 유효성 검증용
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
+        import time as time_module
+        
         # 캐시 확인
         cache_key = self._get_cache_key(title, artist)
         cached_lyrics = self._load_from_cache(cache_key)
@@ -175,38 +187,76 @@ class LyricsFetcher:
             else:
                 print(f"[가사] 캐시된 가사 길이 불일치. 재검색 시도.")
         
-        print(f"[가사] 검색 시작: {title} - {artist} (길이: {duration_ms}ms)")
+        print(f"[가사] 병렬 검색 시작: {title} - {artist} (길이: {duration_ms}ms)")
         
         # 검색어 생성
         queries = self._generate_search_queries(title, artist)
+        if not queries:
+            queries = [f"{artist} {title}"]
         
-        for i, query in enumerate(queries):
-            # 검색 횟수 제한 (속도 이슈)
-            if i >= self.MAX_SEARCH_ATTEMPTS:
-                break
-                
+        # 검색 프로바이더 목록 (우선순위 순)
+        providers = ['musixmatch', 'lrclib', 'netease', 'megalobiz']
+        
+        # 모든 (쿼리 인덱스, 쿼리, 프로바이더) 조합 생성
+        search_tasks = []
+        for query_idx, query in enumerate(queries[:self.MAX_SEARCH_ATTEMPTS]):
+            for provider in providers:
+                search_tasks.append((query_idx, query, provider))
+        
+        print(f"[가사] 총 {len(search_tasks)}개 검색 작업 병렬 실행")
+        
+        def search_single(task):
+            """단일 검색 작업"""
+            query_idx, query, provider = task
             try:
-                print(f"[가사] 검색 시도 ({i+1}/{min(len(queries), self.MAX_SEARCH_ATTEMPTS)}): {query}")
-                
-                # syncedlyrics 검색
-                # 처음 2회는 기본 검색, 이후는 enhanced 모드로 더 많은 소스 검색
-                use_enhanced = (i >= 2)
-                lrc_content = syncedlyrics.search(query, enhanced=use_enhanced)
-                
-                if lrc_content:
+                lrc = syncedlyrics.search(query, providers=[provider])
+                if lrc:
+                    return (query_idx, query, provider, lrc)
+            except Exception:
+                pass
+            return None
+        
+        # 결과 수집 (우선순위별)
+        valid_results = []  # (query_idx, query, provider, lrc)
+        
+        # 병렬 검색 (최대 8개 동시 실행)
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {executor.submit(search_single, task): task for task in search_tasks}
+            start_time = time_module.time()
+            
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    query_idx, query, provider, lrc = result
+                    
                     # 유효성 검증
-                    if self._validate_lyrics(lrc_content, duration_ms):
-                        print(f"[가사] 가사 찾음 (enhanced={use_enhanced}, 쿼리: {query})")
-                        self._save_to_cache(cache_key, lrc_content)
-                        return lrc_content
-                    else:
-                         print(f"[가사] 가사 길이 불일치, 무시함 (쿼리: {query})")
-                
-                # 너무 빠른 요청 방지
-                time.sleep(0.3)
-                
-            except Exception as e:
-                print(f"[가사] 검색 오류 (쿼리: {query}): {e}")
+                    if self._validate_lyrics(lrc, duration_ms):
+                        print(f"[가사] 유효 결과 (우선순위 {query_idx+1}, 쿼리: {query[:30]}..., 소스: {provider})")
+                        
+                        # 첫 번째 쿼리(우선순위 최고)의 결과면 즉시 반환
+                        if query_idx == 0:
+                            print(f"[가사] 최우선 결과 사용!")
+                            self._save_to_cache(cache_key, lrc)
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            return lrc
+                        
+                        # 그 외는 후보로 저장
+                        valid_results.append(result)
+                        
+                        # 500ms 이상 지났고 결과가 있으면 최선의 결과 반환
+                        elapsed = time_module.time() - start_time
+                        if elapsed > 0.5 and valid_results:
+                            break
+        
+        # 최우선 결과가 없었으면 후보 중 가장 높은 우선순위 선택
+        if valid_results:
+            # 쿼리 인덱스가 가장 낮은 것 선택 (우선순위 높은 것)
+            valid_results.sort(key=lambda x: x[0])
+            best = valid_results[0]
+            query_idx, query, provider, lrc = best
+            print(f"[가사] 차선 결과 사용 (우선순위 {query_idx+1}, 소스: {provider})")
+            self._save_to_cache(cache_key, lrc)
+            return lrc
         
         print("[가사] 가사를 찾을 수 없음")
         return None

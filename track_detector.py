@@ -146,20 +146,6 @@ class TrackDetector:
         if " - " in raw_info:
             parts = raw_info.split(" - ", 1)
             return parts[0].strip(), parts[1].strip()
-            title_part = parts[0].strip()
-            cover_artist = parts[1].strip()
-            
-            # 제목에서 괄호/브라켓 안의 원곡 아티스트 찾기
-            # 예: "Enemy{Imagine Dragons x J.I.D]" -> title="Enemy", original_artist="Imagine Dragons x J.I.D"
-            original_match = re.search(r'[\[\{(]([^\]\})]+)[\]\})]', title_part)
-            if original_match:
-                # 원곡 아티스트가 있으면 그것 사용
-                clean_title = re.sub(r'[\[\{(][^\]\})]+[\]\})]', '', title_part).strip()
-                original_artist = original_match.group(1).strip()
-                return clean_title, original_artist
-            
-            # 괄호가 없으면 커버 아티스트 사용
-            return title_part, cover_artist
         
         # 패턴 3: 괄호 안에 아티스트 (feat, ft 등)
         feat_match = re.search(r'\s*[\(\[](?:feat\.?|ft\.?|featuring)\s*([^\)\]]+)[\)\]]', raw_info, re.IGNORECASE)

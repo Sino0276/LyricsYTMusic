@@ -15,6 +15,19 @@ from winsdk.windows.media.control import (
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
 )
 
+# 이벤트 루프 캐시 (재사용을 위해)
+_cached_loop = None
+
+def _get_or_create_loop():
+    """이벤트 루프 가져오기 또는 생성 (재사용)"""
+    global _cached_loop
+    try:
+        if _cached_loop is None or _cached_loop.is_closed():
+            _cached_loop = asyncio.new_event_loop()
+        return _cached_loop
+    except Exception:
+        return asyncio.new_event_loop()
+
 
 @dataclass
 class MediaInfo:
@@ -95,10 +108,9 @@ async def get_current_media_async() -> Optional[MediaInfo]:
 def get_current_media() -> Optional[MediaInfo]:
     """동기 함수로 현재 재생 중인 미디어 정보 가져오기"""
     try:
-        loop = asyncio.new_event_loop()
+        loop = _get_or_create_loop()
         asyncio.set_event_loop(loop)
         result = loop.run_until_complete(get_current_media_async())
-        loop.close()
         return result
     except Exception as e:
         print(f"[MediaSession] 동기 호출 오류: {e}")
@@ -108,7 +120,7 @@ def get_current_media() -> Optional[MediaInfo]:
 def get_playback_position_ms() -> Optional[int]:
     """현재 재생 위치만 빠르게 가져오기 (밀리초, 보정 포함)"""
     try:
-        loop = asyncio.new_event_loop()
+        loop = _get_or_create_loop()
         asyncio.set_event_loop(loop)
         
         async def get_position():
@@ -119,9 +131,9 @@ def get_playback_position_ms() -> Optional[int]:
             return None
         
         result = loop.run_until_complete(get_position())
-        loop.close()
         return result
-    except Exception:
+    except Exception as e:
+        # 디버그용 로깅은 생략 (빈번한 호출)
         return None
 
 
@@ -181,7 +193,7 @@ class MediaSessionWatcher:
             if self._current_session and self._media_properties_token:
                 try:
                     self._current_session.remove_media_properties_changed(self._media_properties_token)
-                except:
+                except Exception:
                     pass
             
             # 새 세션 가져오기
