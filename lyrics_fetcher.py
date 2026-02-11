@@ -195,7 +195,7 @@ class LyricsFetcher:
             queries = [f"{artist} {title}"]
         
         # 검색 프로바이더 목록 (우선순위 순)
-        providers = ['musixmatch', 'lrclib', 'netease', 'megalobiz']
+        providers = ['musixmatch', 'lrclib', 'netease']
         
         # 모든 (쿼리 인덱스, 쿼리, 프로바이더) 조합 생성
         search_tasks = []
@@ -233,9 +233,9 @@ class LyricsFetcher:
                     if self._validate_lyrics(lrc, duration_ms):
                         print(f"[가사] 유효 결과 (우선순위 {query_idx+1}, 쿼리: {query[:30]}..., 소스: {provider})")
                         
-                        # 첫 번째 쿼리(우선순위 최고)의 결과면 즉시 반환
+                        # 1순위(최고 우선순위) 결과면 즉시 반환
                         if query_idx == 0:
-                            print(f"[가사] 최우선 결과 사용!")
+                            print(f"[가사] 최우선 결과 사용! (즉시 반환)")
                             self._save_to_cache(cache_key, lrc)
                             executor.shutdown(wait=False, cancel_futures=True)
                             return lrc
@@ -243,9 +243,17 @@ class LyricsFetcher:
                         # 그 외는 후보로 저장
                         valid_results.append(result)
                         
-                        # 500ms 이상 지났고 결과가 있으면 최선의 결과 반환
+                        # 타임아웃 체크 로직 개선:
+                        # 1. 1순위 결과가 아니고
+                        # 2. 충분한 시간(3.0초)이 지나지 않았으면 
+                        # -> 더 기다린다 (continue)
                         elapsed = time_module.time() - start_time
-                        if elapsed > 0.5 and valid_results:
+                        if elapsed < 3.0:
+                            continue
+                            
+                        # 3.0초가 지났는데도 1순위가 안 오면, 현재 확보된 것 중 최선 반환
+                        if valid_results:
+                            print(f"[가사] 1순위 검색 지연. 현재 확보된 차선책 사용.")
                             break
         
         # 최우선 결과가 없었으면 후보 중 가장 높은 우선순위 선택
@@ -282,7 +290,7 @@ class LyricsFetcher:
             # 오차 범위: 30초 (라이브 버전, 인트로/아웃트로 차이 고려)
             diff = abs(lrc_duration_ms - target_duration_ms)
             
-            if diff > 30000: # 30초 이상 차이나면 다른 곡일 확률 높음
+            if diff > 10000: # 10초 이상 차이나면 다른 곡일 확률 높음
                 print(f"[검증] 길이 차이 과다: LRC={lrc_duration_ms}ms, Track={target_duration_ms}ms (Diff: {diff}ms)")
                 return False
             

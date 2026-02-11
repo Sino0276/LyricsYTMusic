@@ -36,7 +36,15 @@ class MemberColors:
                       None이면 이 파일과 같은 디렉토리에서 찾음
         """
         if json_path is None:
-            json_path = Path(__file__).parent / "member_colors.json"
+            import sys
+            if getattr(sys, 'frozen', False):
+                # exe 실행 시
+                base_path = Path(sys.executable).parent
+            else:
+                # 일반 파이썬 실행 시
+                base_path = Path(__file__).parent
+                
+            json_path = base_path / "member_colors.json"
         
         self.json_path = Path(json_path)
         self._data: dict[str, dict[str, str]] = {}

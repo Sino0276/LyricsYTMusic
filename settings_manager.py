@@ -15,7 +15,16 @@ class SettingsManager:
     }
     
     def __init__(self, filepath="settings.json"):
-        self.filepath = filepath
+        # PyInstaller 환경 지원
+        import sys
+        if getattr(sys, 'frozen', False):
+            # exe 실행 시
+            base_path = os.path.dirname(sys.executable)
+        else:
+            # 일반 파이썬 실행 시
+            base_path = os.getcwd() # 또는 os.path.dirname(os.path.abspath(__file__))
+            
+        self.filepath = os.path.join(base_path, filepath)
         self._settings = self.DEFAULT_SETTINGS.copy()
         self._observers: List[Callable[[Dict[str, Any]], None]] = []
         self._load()
