@@ -2,9 +2,11 @@
   "multi_source_search": true,
   "click_through_mode": false,
   "background_color": "#1a1a2e",
-  "text_color": "#e0e0e0",
-  "highlight_color": "#e94560",
+  "text_color": "#ffffff",
+  "highlight_color": "#ffd700",
   "opacity": 0.9,
   "font_family": "Malgun Gothic",
-  "font_size": 11
+  "font_size": 12,
+  "show_translations": true,
+  "bg_color": "#101010"
 }
