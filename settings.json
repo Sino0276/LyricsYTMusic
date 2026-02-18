@@ -4,5 +4,7 @@
   "background_color": "#1a1a2e",
   "text_color": "#e0e0e0",
   "highlight_color": "#e94560",
-  "opacity": 0.9
+  "opacity": 0.9,
+  "font_family": "Malgun Gothic",
+  "font_size": 11
 }

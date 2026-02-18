@@ -151,6 +151,12 @@ class LyricsApp:
         opacity = settings.get("opacity", 0.9)
         self.overlay.set_opacity(opacity)
         
+        # 5. 폰트 적용
+        font_family = settings.get("font_family", "Malgun Gothic")
+        font_size = settings.get("font_size", 11)
+        self.overlay.set_font(font_family, font_size)
+
+        
         # 5. 기타 설정 적용 (필요 시) # Kept this comment
         # multi_source_search는 사용하는 시점에 self._settings를 참조하므로 별도 조치 불필요
         

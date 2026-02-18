@@ -7,6 +7,7 @@ from PyInstaller.utils.hooks import collect_data_files
 # 데이터 파일 수집
 # pykakasi 데이터 파일이 누락되는 문제 해결
 datas = collect_data_files('pykakasi')
+datas += collect_data_files('certifi') # SSL 인증서 파일 문제 해결
 
 # 빌드 옵션
 options = [

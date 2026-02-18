@@ -11,7 +11,9 @@ class SettingsManager:
         "background_color": "#1a1a2e",
         "text_color": "#e0e0e0",
         "highlight_color": "#e94560",
-        "opacity": 0.9
+        "opacity": 0.9,
+        "font_family": "Malgun Gothic",  # 기본 폰트 (맑은 고딕)
+        "font_size": 11,                  # 기본 폰트 크기 (pt)
     }
     
     def __init__(self, filepath="settings.json"):

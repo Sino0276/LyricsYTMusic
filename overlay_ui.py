@@ -5,7 +5,7 @@ tkinter를 사용하여 항상 최상위에 표시되는 투명 오버레이 창
 
 import tkinter as tk
 from tkinter import font as tkfont
-from tkinter import colorchooser
+from tkinter import colorchooser, ttk
 from typing import Optional, Callable
 from dataclasses import dataclass, field
 import win32gui
@@ -13,6 +13,27 @@ import win32con
 import colorsys
 
 DEFAULT_FONT = "Malgun Gothic"
+
+# 추천 폰트 목록 (한국어 지원 우선순위)
+RECOMMENDED_FONTS = [
+    "Malgun Gothic",
+    "Nanum Gothic",
+    "Nanum Myeongjo",
+    "Gmarket Sans",
+    "Noto Sans KR",
+    "Arial",
+    "Segoe UI",
+]
+
+
+def _get_available_fonts() -> list:
+    """시스템에 실제로 설치된 추천 폰트만 반환 (없으면 기본 폰트 포함)"""
+    available = set(tkfont.families())
+    result = [f for f in RECOMMENDED_FONTS if f in available]
+    # 추천 목록에 없더라도 최소 1개는 보장
+    if not result:
+        result = [DEFAULT_FONT]
+    return result
 
 # 테마 프리셋 정의
 THEME_PRESETS = [
@@ -208,6 +229,12 @@ class LyricsOverlay:
         # 스레드 안전 명령 큐 (트레이 등에서 사용)
         import queue
         self._command_queue = queue.Queue()
+        
+        # 현재 폰트 상태 (update_lyrics에서 참조)
+        self._current_font_family = DEFAULT_FONT
+        self._current_font_size = 11
+        self._original_font_sizes = {}
+        self._updating_font_ui = False  # 순환 호출 방지 가드
         
         # 창 설정
         self._setup_window()
@@ -674,7 +701,99 @@ class LyricsOverlay:
         self.text_color_preview = create_color_picker("가사색", "text_color")
         self.highlight_color_preview = create_color_picker("강조색", "highlight_color")
         
-        # 검색 패널
+        # ── 폰트 설정 섹션 ──────────────────────────────────────
+        font_header_frame = tk.Frame(self.settings_frame, bg=self._panel_color)
+        font_header_frame.pack(fill=tk.X, padx=20, pady=(10, 5))
+        tk.Label(
+            font_header_frame,
+            text="🔤 폰트 설정",
+            bg=self._panel_color,
+            fg="#888888",
+            font=(DEFAULT_FONT, 9, "bold")
+        ).pack(side=tk.LEFT)
+        
+        # 폰트 크기 슬라이더 (드롭다운보다 위에 배치 — 드롭다운이 아래로 펼쳐져도 가리지 않음)
+        font_size_frame = tk.Frame(self.settings_frame, bg=self._panel_color)
+        font_size_frame.pack(fill=tk.X, padx=20, pady=(0, 2))
+        tk.Label(
+            font_size_frame,
+            text="크기",
+            bg=self._panel_color,
+            fg=self._text_color,
+            font=(DEFAULT_FONT, 9),
+            width=10,
+            anchor="w"
+        ).pack(side=tk.LEFT)
+        self.font_size_val_label = tk.Label(
+            font_size_frame,
+            text="11pt",
+            bg=self._panel_color,
+            fg="#888888",
+            font=(DEFAULT_FONT, 9),
+            width=4,
+            anchor="e"
+        )
+        self.font_size_val_label.pack(side=tk.RIGHT)
+        
+        self.font_size_slider = RoundedSlider(
+            self.settings_frame,
+            width=160,
+            height=20,
+            min_val=8,
+            max_val=20,
+            bg=self._panel_color,
+            command=self._on_font_size_change,
+            snap_val=1
+        )
+        self.font_size_slider.set(11)  # 기본값
+        self.font_size_slider.pack(fill=tk.X, padx=20, pady=(0, 8))
+        
+        # 폰트 선택 드롭다운 (크기 슬라이더 아래에 배치)
+        font_family_frame = tk.Frame(self.settings_frame, bg=self._panel_color)
+        font_family_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
+        tk.Label(
+            font_family_frame,
+            text="폰트",
+            bg=self._panel_color,
+            fg=self._text_color,
+            font=(DEFAULT_FONT, 9),
+            width=10,
+            anchor="w"
+        ).pack(side=tk.LEFT)
+        
+        # 시스템에 설치된 추천 폰트 목록 가져오기
+        available_fonts = _get_available_fonts()
+        self._font_family_var = tk.StringVar(value=available_fonts[0] if available_fonts else DEFAULT_FONT)
+        
+        # ttk.Combobox 스타일 설정 (다크 테마에 맞게)
+        style = ttk.Style()
+        style.theme_use("default")
+        style.configure(
+            "Font.TCombobox",
+            fieldbackground=self._panel_color,
+            background=self._panel_color,
+            foreground=self._text_color,
+            selectbackground=self._highlight_color,
+            selectforeground="#ffffff",
+            arrowcolor=self._text_color,
+        )
+        
+        self.font_family_combo = ttk.Combobox(
+            font_family_frame,
+            textvariable=self._font_family_var,
+            values=available_fonts,
+            state="readonly",
+            style="Font.TCombobox",
+            font=(DEFAULT_FONT, 9),
+            width=14
+        )
+        self.font_family_combo.pack(side=tk.RIGHT)
+        # 폰트 선택 시 즉시 적용 — trace_add 방식 사용
+        # (overrideredirect 윈도우에서 <<ComboboxSelected>> 가상 이벤트가
+        #  발생하지 않는 문제 해결, StringVar 변경 시 무조건 콜백 발생)
+        self._font_family_var.trace_add("write", self._on_font_changed)
+        
+
         self.search_frame = tk.Frame(self.main_frame, bg=self._panel_color)
         
         # 검색 입력 필드들
@@ -807,6 +926,31 @@ class LyricsOverlay:
         new_height = max(200, self._drag_data["height"] + delta_y)
         
         self.root.geometry(f"{new_width}x{new_height}")
+        
+        # 설정 패널이 열려있으면 위치/크기 갱신 (잘림 방지)
+        if self._settings_panel_visible and not self._settings_panel_animating:
+            self.root.after(10, self._reposition_settings_panel)
+
+    def _reposition_settings_panel(self):
+        """설정 패널 위치/크기를 현재 창 크기에 맞게 재배치"""
+        panel_width = 250
+        right_margin = 5
+        title_bar_height = 40
+        bottom_margin = 30
+
+        parent_width = self.main_frame.winfo_width()
+        parent_height = self.main_frame.winfo_height()
+        panel_height = max(100, parent_height - title_bar_height - bottom_margin)
+        x = parent_width - panel_width - right_margin
+
+        self.settings_frame.place(
+            x=x, y=title_bar_height,
+            width=panel_width, height=panel_height
+        )
+        self.settings_frame.lift()
+        self.settings_btn.lift()
+        self.resize_handle.lift()
+
     
     def _toggle_minimize(self):
         """최소화 토글"""
@@ -913,12 +1057,14 @@ class LyricsOverlay:
                 self._on_save_settings_callback(new_settings)
 
     def _reset_colors(self):
-        """색상 설정 초기화"""
+        """색상 및 폰트 설정 초기화"""
         defaults = {
             "background_color": "#1a1a2e",
             "text_color": "#e0e0e0",
             "highlight_color": "#e94560",
-            "opacity": 0.9
+            "opacity": 0.9,
+            "font_family": "Malgun Gothic",
+            "font_size": 11,
         }
         
         # 콜백 호출 (메인에서 처리 - 설정 병합 및 저장)
@@ -1048,6 +1194,84 @@ class LyricsOverlay:
         if self._on_save_settings_callback: # Changed from self.on_settings_save to self._on_save_settings_callback
             self._on_save_settings_callback({"opacity": opacity})
 
+    def _on_font_changed(self, *args):
+        """폰트 변경 시 콜백 (trace_add에서 호출)"""
+        # update_settings_ui에서 프로그래밍적으로 변경한 경우 무시 (순환 방지)
+        if self._updating_font_ui:
+            return
+        font_family = self._font_family_var.get()
+        font_size = int(self.font_size_slider.get())
+        if self._on_save_settings_callback:
+            self._on_save_settings_callback({
+                "font_family": font_family,
+                "font_size": font_size,
+            })
+
+    def _on_font_size_change(self, val):
+        """폰트 크기 슬라이더 변경 콜백 — 레이블 업데이트 및 설정 저장"""
+        size = int(val)
+        self.font_size_val_label.configure(text=f"{size}pt")
+        font_family = self._font_family_var.get()
+        if self._on_save_settings_callback:
+            self._on_save_settings_callback({
+                "font_family": font_family,
+                "font_size": size,
+            })
+
+    def set_font(self, font_family: str, font_size: int = 11):
+        """모든 위젯에 폰트를 재귀적으로 적용"""
+        self._current_font_family = font_family
+        self._current_font_size = font_size
+
+        # 원본 폰트 크기 딕셔너리가 없으면 초기화
+        # (최초 호출 시 각 위젯의 기본 크기가 기록되며, 이후 항상 원본 기준으로 비율 계산)
+        if not hasattr(self, '_original_font_sizes'):
+            self._original_font_sizes = {}
+
+        self._apply_font_recursive(self.root, font_family, font_size)
+
+    def _apply_font_recursive(self, widget, font_family: str, font_size: int):
+        """위젯 트리를 순회하며 font 옵션을 지원하는 위젯에 폰트 적용"""
+        try:
+            current_font = widget.cget("font")
+            if current_font:
+                try:
+                    f = tkfont.Font(font=current_font)
+                    weight = f.cget("weight")   # "bold" or "normal"
+                    slant = f.cget("slant")     # "italic" or "roman"
+                    raw_size = f.cget("size")
+
+                    # 위젯의 원본 크기를 최초 1회만 저장 (이후 호출에서는 저장된 값 사용)
+                    # 이를 통해 set_font가 여러 번 호출되어도 비율이 누적 왜곡되지 않음
+                    wid = id(widget)
+                    if wid not in self._original_font_sizes:
+                        self._original_font_sizes[wid] = abs(raw_size) if raw_size else 11
+
+                    original_size = self._original_font_sizes[wid]
+                    # 비율 계산: 원본 크기 / 기본 크기(11) × 사용자 지정 크기
+                    ratio = original_size / 11.0
+                    new_size = max(7, round(font_size * ratio))
+
+                    if weight == "bold" and slant == "italic":
+                        new_font = (font_family, new_size, "bold italic")
+                    elif weight == "bold":
+                        new_font = (font_family, new_size, "bold")
+                    elif slant == "italic":
+                        new_font = (font_family, new_size, "italic")
+                    else:
+                        new_font = (font_family, new_size)
+
+                    widget.configure(font=new_font)
+                except Exception:
+                    widget.configure(font=(font_family, font_size))
+        except tk.TclError:
+            pass
+        except Exception:
+            pass
+
+        for child in widget.winfo_children():
+            self._apply_font_recursive(child, font_family, font_size)
+
     def update_settings_ui(self, settings: dict):
         """설정 UI 업데이트"""
         if "multi_source_search" in settings:
@@ -1084,6 +1308,17 @@ class LyricsOverlay:
                 self.highlight_color_preview.configure(bg=highlight_color)
             except:
                 pass
+
+        # 폰트 설정 UI 업데이트 — 가드 플래그로 trace_add 콜백 순환 방지
+        if "font_family" in settings and hasattr(self, '_font_family_var'):
+            self._updating_font_ui = True
+            self._font_family_var.set(settings["font_family"])
+            self._updating_font_ui = False
+        if "font_size" in settings and hasattr(self, 'font_size_slider'):
+            size = int(settings["font_size"])
+            self.font_size_slider.cur_val = max(8, min(20, size))
+            self.font_size_slider._draw()
+            self.font_size_val_label.configure(text=f"{size}pt")
 
     def _on_search_click(self):
         """검색 버튼 클릭 시 - 패널 토글"""
@@ -1254,19 +1489,26 @@ class LyricsOverlay:
         # 인덱스 매핑 (가사 라인 인덱스 -> 메인 라벨 위젯)
         self._line_map: dict[int, tk.Label] = {}
         
+        # 새 가사/메시지 로드 전 스크롤을 맨 위로 초기화
+        # (이전 곡에서 스크롤이 내려가 있으면 새 내용이 보이지 않는 문제 방지)
+        self.lyrics_container.yview_moveto(0)
+        
         # 기존 lyrics_frame 자식 모두 제거 (로딩 메시지 포함)
         for widget in self.lyrics_frame.winfo_children():
             widget.destroy()
         self._lyric_labels.clear()
+
         
         if not lines:
             self._show_placeholder()
             return
         
-        # 폰트 설정
-        normal_font = tkfont.Font(family=DEFAULT_FONT, size=11)
-        highlight_font = tkfont.Font(family=DEFAULT_FONT, size=13, weight="bold")
-        sub_font = tkfont.Font(family=DEFAULT_FONT, size=9)  # 번역/발음용 작은 폰트
+        # 현재 사용자 설정 폰트를 동적으로 사용 (DEFAULT_FONT 하드코딩 대신)
+        font_family = getattr(self, '_current_font_family', DEFAULT_FONT)
+        base_size = getattr(self, '_current_font_size', 11)
+        normal_font = tkfont.Font(family=font_family, size=base_size)
+        highlight_font = tkfont.Font(family=font_family, size=base_size + 2, weight="bold")
+        sub_font = tkfont.Font(family=font_family, size=max(7, base_size - 2))  # 번역/발음용 작은 폰트
         
         current_y = 0
         

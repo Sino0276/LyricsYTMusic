@@ -11,9 +11,11 @@ from typing import Optional
 from langdetect import detect, DetectorFactory
 from deep_translator import GoogleTranslator
 import pykakasi
+from pykakasi import kakasi as PyKakasi
 
 # 재현성을 위한 시드 고정
 DetectorFactory.seed = 0
+
 
 
 @dataclass
@@ -91,11 +93,32 @@ class LyricsTranslator:
             pass
         return 'ko'  # 기본값: 한국어
     
+    
+    def _contains_japanese(self, text: str) -> bool:
+        """일본어 문자(히라가나, 카타카나) 포함 여부 확인"""
+        # 히라가나: 3040-309F
+        # 카타카나: 30A0-30FF
+        # 한자: 4E00-9FBF (한중일 공통이지만 맥락상 포함 고려, 단 여기선 확실한 일본어 감지를 위해 가나 위주)
+        # 하지만 '君', '僕', '愛' 등 한자로만 된 가사도 있으므로 한자도 포함하되, 
+        # 한국어/중국어와 구분하기 위해 가나와 혼용된 경우를 우선순위로 두는 로직은 별도 처리
+        # 여기서는 단순히 문자 범위 체크
+        return bool(re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FBF]', text))
+
     def needs_translation(self, text: str) -> bool:
         """번역이 필요한지 확인 (타겟 언어와 다른 경우)"""
-        if not text or len(text.strip()) < 3:
+        if not text:
+            return False
+            
+        # 일본어 문자가 포함되어 있으면 길이 1이라도 허용 (한자 등)
+        is_jp = self._contains_japanese(text)
+        
+        if not is_jp and len(text.strip()) < 2:
             return False
         
+        # 일본어 문자가 포함되어 있고 타겟이 일본어가 아니면 무조건 번역 필요
+        if is_jp and self.target_lang != 'ja':
+            return True
+            
         try:
             detected = detect(text)
             return detected != self.target_lang and detected != 'en'
@@ -150,11 +173,15 @@ class LyricsTranslator:
         to_translate = []  # (원본 인덱스, 정제된 텍스트)
         
         for i, text in enumerate(texts):
-            if not text or len(text.strip()) < 2:
+            if not text:
                 continue
             
             clean_text = re.sub(r'^\[[\d:.]+\]\s*', '', text).strip()
             if not clean_text:
+                continue
+                
+            # 일본어는 한 글자도 허용
+            if not self._contains_japanese(clean_text) and len(clean_text) < 2:
                 continue
             
             # 캐시 확인
@@ -170,10 +197,20 @@ class LyricsTranslator:
         
         # 첫 번째 텍스트로 언어 감지
         try:
-            sample_text = to_translate[0][1]
-            source_lang = detect(sample_text)
+            # 배치 내에 일본어가 포함되어 있는지 확인 (우선순위 높음)
+            has_japanese = False
+            for _, text in to_translate:
+                if self._contains_japanese(text):
+                    has_japanese = True
+                    break
             
-            if source_lang == self.target_lang or source_lang == 'en':
+            if has_japanese:
+                source_lang = 'ja'
+            else:
+                sample_text = to_translate[0][1]
+                source_lang = detect(sample_text)
+            
+            if source_lang == self.target_lang or (source_lang == 'en' and not has_japanese):
                 return results
             
             src_code = self.LANG_MAP.get(source_lang, source_lang)
@@ -238,12 +275,16 @@ class LyricsTranslator:
         Returns:
             TranslatedLine 또는 번역 불필요/실패 시 None
         """
-        if not text or len(text.strip()) < 2:
+        if not text:
             return None
-        
+            
         # 타임스탬프나 메타데이터 제외
         clean_text = re.sub(r'^\[[\d:.]+\]\s*', '', text).strip()
         if not clean_text:
+            return None
+
+        # 일본어는 한 글자도 허용 (君, 愛 등)
+        if not self._contains_japanese(clean_text) and len(clean_text) < 2:
             return None
         
         # 캐시 확인
@@ -252,12 +293,29 @@ class LyricsTranslator:
             return self._cache[cache_key]
         
         try:
-            # 언어 감지
-            source_lang = detect(clean_text)
+            # 1. 일본어 강제 감지 (언어 감지 라이브러리보다 우선)
+            # langdetect는 짧은 텍스트나 한자 단독일 때 오류가 발생하거나 부정확함
+            is_japanese = self._contains_japanese(clean_text)
             
-            # 타겟 언어와 같거나 영어면 번역 불필요
-            if source_lang == self.target_lang or source_lang == 'en':
+            if is_japanese:
+                source_lang = 'ja'
+            else:
+                try:
+                    source_lang = detect(clean_text)
+                except Exception:
+                    # 감지 실패 시, 일본어 문자가 없으면 영어로 가정하거나 스킵
+                    # 여기서는 안전하게 스킵
+                    return None
+            
+            # 타겟 언어와 같거나 영어면 번역 불필요 (단, 일본어 감지된 경우는 예외 가능성 있음)
+            if source_lang == self.target_lang:
                 return None
+            
+            # 영어로 감지되었지만 일본어가 섞여있지 않은 순수 영어인 경우만 건너뜀
+            if source_lang == 'en':
+                return None
+            
+            # 언어 코드 변환
             
             # 언어 코드 변환
             src_code = self.LANG_MAP.get(source_lang, source_lang)
@@ -291,8 +349,34 @@ class LyricsTranslator:
     
     def _transliterate_japanese_to_korean(self, text: str) -> str:
         """일본어 -> 한글 발음 변환 (PyKakasi + 매핑)"""
+        # 가사에서 자주 쓰이는 인칭대명사의 읽는 법 강제 (Heuristic)
+        # 또한 가사에서 자주 쓰이는 단어들의 읽는 법 고정 (Context)
+        overrides = {
+            "愛しい": "いとしい", # Itoshii
+            "愛してる": "あいしてる",
+            "愛して": "あいして",
+            "愛": "あい",
+            "君": "きみ",
+            "僕": "ぼく",
+            "俺": "おれ",
+            "私": "わたし",
+            "側に": "そばに",
+            "側で": "そばで",
+            "瞳": "ひとみ",
+            "光": "ひかり",
+            "闇": "やみ",
+            "空": "そら",
+            "風": "かぜ",
+            "涙": "なみだ",
+        }
+        
+        # 긴 단어부터 치환하여 부분 일치 문제 방지
+        temp_text = text
+        for key in sorted(overrides.keys(), key=len, reverse=True):
+            temp_text = temp_text.replace(key, overrides[key])
+        
         # 1. PyKakasi로 히라가나 변환 (한자 등 처리)
-        result = self.kks.convert(text)
+        result = self.kks.convert(temp_text)
         hiragana_text = "".join([item['hira'] for item in result])
         
         # 2. 히라가나 -> 한글 매핑
@@ -379,7 +463,11 @@ class LyricsTranslator:
                 elif next_char_hira and next_char_hira in n_as_n:
                     result.append('ㄴ')  # 받침으로 처리
                 else:
-                    result.append('ㅇ')  # 받침으로 처리 (응)
+                    # 문장 끝이나 기타 등등의 경우
+                    # 한국어 표기법상 받침 'ㄴ'이 표준에 가까움 (기존 'ㅇ'에서 변경)
+                    # 예: じかん(지칸), みかん(미칸), きりん(기린)
+                    # 단, idiomatic하게 'ㅇ'으로 들리는 경우도 있으나(스미마셍), 'ㄴ'이 더 범용적 (스미마센)
+                    result.append('ㄴ')
                 i += 1
                 continue
             
@@ -408,9 +496,11 @@ class LyricsTranslator:
         # 후처리: 촉음 마커를 받침으로 변환
         output = ''.join(result)
         
-        # ッ + 자음 → 받침 + 자음 (예: ッカ → ㄱ카 → 깟카... 복잡하므로 간단히 처리)
-        # 한글 조합은 복잡하므로 일단 'ッ'를 빈 문자나 '읏'으로
-        output = output.replace('ッ', '')
+        # ッ + 자음 → 받침 + 자음
+        # 예: ずっと (zutto) -> 즛토
+        # 'ッ'를 'ㅅ' 받침으로 처리하는 것이 한국어 표기법에 가까움 (단, 뒤 자음에 따라 다름)
+        # 여기서는 단순화를 위해 'ㅅ'으로 통일 (사이시옷 느낌)
+        output = output.replace('ッ', 'ㅅ')
         
         # 받침 ㅁ, ㄴ, ㅇ를 앞 글자에 붙이기 (한글 조합)
         final_result = []
@@ -422,7 +512,7 @@ class LyricsTranslator:
             next_char = chars[i + 1] if i + 1 < len(chars) else None
             
             # 받침 처리
-            if next_char in ('ㅁ', 'ㄴ', 'ㅇ') and char >= '가' and char <= '힣':
+            if next_char in ('ㅁ', 'ㄴ', 'ㅇ', 'ㄹ', 'ㄱ', 'ㅂ', 'ㅅ') and char >= '가' and char <= '힣':
                 # 이미 받침이 없는 경우에만 추가
                 char_code = ord(char) - 0xAC00
                 jong = char_code % 28
@@ -431,13 +521,14 @@ class LyricsTranslator:
                     cho = char_code // 588
                     jung = (char_code % 588) // 28
                     
-                    jong_map = {'ㅁ': 16, 'ㄴ': 4, 'ㅇ': 21}
+                    jong_map = {'ㅁ': 16, 'ㄴ': 4, 'ㅇ': 21, 'ㄹ': 8, 'ㄱ': 1, 'ㅂ': 17, 'ㅅ': 19}
                     new_jong = jong_map.get(next_char, 0)
                     
-                    new_char = chr(0xAC00 + cho * 588 + jung * 28 + new_jong)
-                    final_result.append(new_char)
-                    i += 2
-                    continue
+                    if new_jong != 0:
+                        new_char = chr(0xAC00 + cho * 588 + jung * 28 + new_jong)
+                        final_result.append(new_char)
+                        i += 2
+                        continue
             
             final_result.append(char)
             i += 1
